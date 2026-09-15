@@ -1,0 +1,11 @@
+## Environment
+.venvs/*
+!.venvs/*.md
+.env
+
+## Raw Data
+/corpora/
+/data/
+
+## Python
+__pycache__/

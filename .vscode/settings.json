@@ -4,6 +4,7 @@
     "editor.cursorBlinking": "expand",
     "workbench.editorAssociations": {
         "*.parquet": "parquet-visualizer.parquetVisualizer",
-        "*.csv": "default"
+        "*.csv": "default",
+        "*.duckdb": "duckdb.dataFileViewer"
     }
 }
