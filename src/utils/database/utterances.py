@@ -23,6 +23,7 @@ from .config import (
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--corpus", type=str, required=True)
+    args.add_argument("--force", action="store_true")
     args = args.parse_args()
 
     match args.corpus:
@@ -37,7 +38,7 @@ if __name__ == "__main__":
         case _:
             raise NotImplementedError(f"Corpus {args.corpus} not implemented")
 
-    create_database(SPEECH_UTILS_DB_METADATA_PATH)
+    create_database(SPEECH_UTILS_DB_METADATA_PATH, force=args.force)
     create_table(
         SPEECH_UTILS_DB_METADATA_PATH,
         UTTERANCES_TABLE,
