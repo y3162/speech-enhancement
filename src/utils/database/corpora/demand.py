@@ -10,7 +10,7 @@ from typing import (
     List,
 )
 
-from ..config import SPEECH_UTILS_CORPORA_DEMAND_DIR
+from ..constants import SPEECH_UTILS_CORPORA_DEMAND_DIR
 from .audio import read_audio_stream_info
 from .dto import Noise
 

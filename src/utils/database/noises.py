@@ -12,7 +12,7 @@ from .common import (
     create_database,
     create_table,
 )
-from .config import (
+from .constants import (
     SPEECH_UTILS_DB_METADATA_PATH,
 )
 
