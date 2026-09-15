@@ -1,4 +1,16 @@
-from .corpora.dto import UTTERANCES_TABLE
+import argparse
+
+from .corpora.dto import (
+    UTTERANCES_TABLE,
+    Utterance,
+)
+from .corpora import (
+    librispeech_utterance_generator,
+    libritts_utterance_generator,
+    vctk_utterance_generator,
+    demand_utterance_generator,
+)
+from .connection import Connection
 from .common import (
     create_database,
     create_table,
@@ -8,9 +20,40 @@ from .config import (
 )
 
 
-def create_utterances_table() -> None:
+if __name__ == "__main__":
+    args = argparse.ArgumentParser()
+    args.add_argument("--corpus", type=str, required=True)
+    args = args.parse_args()
+
+    match args.corpus:
+        case "librispeech":
+            utterance_generator = librispeech_utterance_generator()
+        case "libritts":
+            utterance_generator = libritts_utterance_generator()
+        case "vctk":
+            utterance_generator = vctk_utterance_generator()
+        case "demand":
+            utterance_generator = demand_utterance_generator()
+        case _:
+            raise NotImplementedError(f"Corpus {args.corpus} not implemented")
+
     create_database(SPEECH_UTILS_DB_METADATA_PATH)
     create_table(
         SPEECH_UTILS_DB_METADATA_PATH,
         UTTERANCES_TABLE,
     )
+
+    BATCH_SIZE = 10_000
+
+    con = Connection(SPEECH_UTILS_DB_METADATA_PATH)
+    batch: list[Utterance] = []
+    for utterance in utterance_generator:
+        batch.append(utterance)
+        if len(batch) < BATCH_SIZE:
+            continue
+        con.insert(UTTERANCES_TABLE, batch)
+        batch = []
+    if batch:
+        con.insert(UTTERANCES_TABLE, batch)
+    con.commit()
+    con.close()

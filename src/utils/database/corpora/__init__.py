@@ -1,16 +1,11 @@
-from typing import Iterator
-
-from . import demand, librispeech, libritts, vctk
-from .dto import Utterance
-
-
-def utterance_generator() -> Iterator[Utterance]:
-    yield from librispeech.utterance_generator()
-    yield from libritts.utterance_generator()
-    yield from vctk.utterance_generator()
-    yield from demand.utterance_generator()
-
+from .librispeech import utterance_generator as librispeech_utterance_generator
+from .libritts import utterance_generator as libritts_utterance_generator
+from .vctk import utterance_generator as vctk_utterance_generator
+from .demand import utterance_generator as demand_utterance_generator
 
 __all__ = [
-    "utterance_generator",
+    "librispeech_utterance_generator",
+    "libritts_utterance_generator",
+    "vctk_utterance_generator",
+    "demand_utterance_generator",
 ]
