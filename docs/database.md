@@ -37,5 +37,5 @@ export SPEECH_UTILS_DB_ROOT_DIR=./data/db
 python -m src.utils.database.utterances --corpus librispeech --force
 python -m src.utils.database.utterances --corpus libritts --force
 python -m src.utils.database.utterances --corpus vctk --force
-python -m src.utils.database.utterances --corpus demand --force
+python -m src.utils.database.noises --corpus demand --force
 ```

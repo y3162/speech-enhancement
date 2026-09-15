@@ -3,8 +3,11 @@
     "workbench.iconTheme": "catppuccin-frappe",
     "editor.cursorBlinking": "expand",
     "workbench.editorAssociations": {
-        "*.parquet": "parquet-visualizer.parquetVisualizer",
         "*.csv": "default",
-        "*.duckdb": "duckdb.dataFileViewer"
+        "*.md": "default",
+        "*.parquet": "parquet-visualizer.parquetVisualizer",
+        "*.duckdb": "duckdb.dataFileViewer",
+        "*.tsv": "duckdb.dataFileViewer",
+        "*.xlsx": "duckdb.dataFileViewer"
     }
 }

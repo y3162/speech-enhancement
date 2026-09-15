@@ -28,7 +28,6 @@ UTTERANCES_TABLE = Table(
     ),
 )
 
-
 @dataclass(frozen=True, kw_only=True)
 class Utterance(Row):
     corpus: str
@@ -42,3 +41,30 @@ class Utterance(Row):
     frames: int | None = None
     channels: int | None = None
     text: str | None = None
+
+
+NOISES_TABLE = Table(
+    name="noises",
+    columns=(
+        Column(name="id", type=int, auto_increment=True, primary=True),
+        Column(name="corpus", type=str, nullable=False),
+        Column(name="subset", type=str, nullable=True),
+        Column(name="noise_id", type=str, nullable=True),
+        Column(name="audio_path", type=Path, nullable=False, unique=True),
+        Column(name="sample_rate", type=int, nullable=True),
+        Column(name="frames", type=int, nullable=True),
+        Column(name="channels", type=int, nullable=True),
+        Column(name="created_at", type=datetime, default="CURRENT_TIMESTAMP"),
+        Column(name="updated_at", type=datetime, default="CURRENT_TIMESTAMP"),
+    ),
+)
+
+@dataclass(frozen=True, kw_only=True)
+class Noise(Row):
+    corpus: str
+    audio_path: Path
+    subset: str | None = None
+    noise_id: str | None = None
+    sample_rate: int | None = None
+    frames: int | None = None
+    channels: int | None = None

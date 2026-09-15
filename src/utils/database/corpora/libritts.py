@@ -19,7 +19,7 @@ from .dto import Utterance
 _IO_WORKERS = min(os.cpu_count() or 1, 64)
 
 
-def utterance_generator() -> Iterator[Utterance]:
+def utterance_iterator() -> Iterator[Utterance]:
     with ThreadPoolExecutor(max_workers=_IO_WORKERS) as executor:
         pending = set()
         paths = iter_transcript_files(SPEECH_UTILS_CORPORA_LIBRITTS_DIR)

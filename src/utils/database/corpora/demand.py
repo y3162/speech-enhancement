@@ -12,13 +12,13 @@ from typing import (
 
 from ..config import SPEECH_UTILS_CORPORA_DEMAND_DIR
 from .audio import read_audio_stream_info
-from .dto import Utterance
+from .dto import Noise
 
 
 _IO_WORKERS = min(os.cpu_count() or 1, 64)
 
 
-def utterance_generator() -> Iterator[Utterance]:
+def noise_iterator() -> Iterator[Noise]:
     with ThreadPoolExecutor(max_workers=_IO_WORKERS) as executor:
         pending = set()
         paths = iter_environment_dirs(SPEECH_UTILS_CORPORA_DEMAND_DIR)
@@ -56,7 +56,7 @@ def iter_environment_dirs(root: Path) -> Iterator[Path]:
 
 def parse_environment_dir(
     environment_dir: Path,
-) -> List[Utterance]:
+) -> List[Noise]:
     subset_name = environment_dir.name
     results = []
     with os.scandir(environment_dir) as entries:
@@ -66,17 +66,14 @@ def parse_environment_dir(
             audio_path = Path(entry.path)
             sample_rate, frames, channels = read_audio_stream_info(audio_path)
             results.append(
-                Utterance(
+                Noise(
                     corpus="DEMAND",
                     subset=subset_name,
-                    chapter_id=None,
-                    utterance_id=audio_path.stem,
-                    speaker_id=None,
+                    noise_id=audio_path.stem,
                     audio_path=audio_path,
                     sample_rate=sample_rate,
                     frames=frames,
                     channels=channels,
-                    text=None,
                 )
             )
     return results

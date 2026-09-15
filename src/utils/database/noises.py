@@ -1,13 +1,11 @@
 import argparse
 
 from .corpora.dto import (
-    UTTERANCES_TABLE,
-    Utterance,
+    NOISES_TABLE,
+    Noise,
 )
 from .corpora import (
-    librispeech_utterance_iterator,
-    libritts_utterance_iterator,
-    vctk_utterance_iterator,
+    demand_noise_iterator,
 )
 from .connection import Connection
 from .common import (
@@ -26,32 +24,28 @@ if __name__ == "__main__":
     args = args.parse_args()
 
     match args.corpus:
-        case "librispeech":
-            utterance_generator = librispeech_utterance_iterator()
-        case "libritts":
-            utterance_generator = libritts_utterance_iterator()
-        case "vctk":
-            utterance_generator = vctk_utterance_iterator()
+        case "demand":
+            noise_generator = demand_noise_iterator()
         case _:
             raise NotImplementedError(f"Corpus {args.corpus} not implemented")
 
     create_database(SPEECH_UTILS_DB_METADATA_PATH, force=args.force)
     create_table(
         SPEECH_UTILS_DB_METADATA_PATH,
-        UTTERANCES_TABLE,
+        NOISES_TABLE,
     )
 
     BATCH_SIZE = 10_000
 
     con = Connection(SPEECH_UTILS_DB_METADATA_PATH)
-    batch: list[Utterance] = []
-    for utterance in utterance_generator:
-        batch.append(utterance)
+    batch: list[Noise] = []
+    for noise in noise_generator:
+        batch.append(noise)
         if len(batch) < BATCH_SIZE:
             continue
-        con.insert(UTTERANCES_TABLE, batch)
+        con.insert(NOISES_TABLE, batch)
         batch = []
     if batch:
-        con.insert(UTTERANCES_TABLE, batch)
+        con.insert(NOISES_TABLE, batch)
     con.commit()
     con.close()

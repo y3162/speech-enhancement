@@ -4,6 +4,8 @@
         "Catppuccin.catppuccin-vsc",
         "Catppuccin.catppuccin-vsc-icons",
         "oderwat.indent-rainbow",
+        "chuckjonas.duckdb",
+        "shd101wyy.markdown-preview-enhanced",
         "lucien-martijn.parquet-visualizer",
         "openai.chatgpt"
     ]
