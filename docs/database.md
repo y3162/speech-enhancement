@@ -5,7 +5,7 @@
 
 全コーパスを `./corpora` にシンボリックリンクする。
 
-[config.py](./src/utils/database/config.py)にあるように、全コーパスは同一親ディレクトリに配置されていることを仮定している。
+[constants.py](../src/utils/database/constants.py)にあるように、全コーパスは同一親ディレクトリに配置されていることを仮定している。
 
 ```bash
 mkdir -p ./corpora

@@ -28,6 +28,7 @@ UTTERANCES_TABLE = Table(
     ),
 )
 
+
 @dataclass(frozen=True, kw_only=True)
 class Utterance(Row):
     corpus: str
@@ -35,7 +36,6 @@ class Utterance(Row):
     subset: str | None = None
     speaker_id: str | None = None
     chapter_id: str | None = None
-    section_id: str | None = None
     utterance_id: str | None = None
     sample_rate: int | None = None
     frames: int | None = None
@@ -58,6 +58,7 @@ NOISES_TABLE = Table(
         Column(name="updated_at", type=datetime, default="CURRENT_TIMESTAMP"),
     ),
 )
+
 
 @dataclass(frozen=True, kw_only=True)
 class Noise(Row):

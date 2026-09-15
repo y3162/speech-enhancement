@@ -1,41 +1,18 @@
 import os
-from concurrent.futures import (
-    FIRST_COMPLETED,
-    ThreadPoolExecutor,
-    wait,
-)
 from pathlib import Path
-from typing import (
-    Iterator,
-    List,
-)
+from typing import Iterator
 
 from ..constants import SPEECH_UTILS_CORPORA_VCTK_DIR
 from .audio import read_audio_stream_info
 from .dto import Utterance
-
-
-_IO_WORKERS = min(os.cpu_count() or 1, 64)
+from .scan import iter_in_threads
 
 
 def utterance_iterator() -> Iterator[Utterance]:
-    with ThreadPoolExecutor(max_workers=_IO_WORKERS) as executor:
-        pending = set()
-        paths = iter_speaker_dirs(SPEECH_UTILS_CORPORA_VCTK_DIR)
-        listing_done = False
-        in_flight_limit = _IO_WORKERS * 2
-        while pending or not listing_done:
-            while not listing_done and len(pending) < in_flight_limit:
-                speaker_dir = next(paths, None)
-                if speaker_dir is None:
-                    listing_done = True
-                    break
-                pending.add(executor.submit(parse_speaker_dir, speaker_dir))
-            if not pending:
-                break
-            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
-            for future in completed:
-                yield from future.result()
+    return iter_in_threads(
+        iter_speaker_dirs(SPEECH_UTILS_CORPORA_VCTK_DIR),
+        parse_speaker_dir,
+    )
 
 
 """
@@ -50,6 +27,7 @@ VCTK
         └── ...
 """
 
+
 def iter_speaker_dirs(root: Path) -> Iterator[Path]:
     wav_root = root / "wav48"
     with os.scandir(wav_root) as speakers:
@@ -60,7 +38,7 @@ def iter_speaker_dirs(root: Path) -> Iterator[Path]:
 
 def parse_speaker_dir(
     speaker_dir: Path,
-) -> List[Utterance]:
+) -> list[Utterance]:
     speaker_id = speaker_dir.name
     txt_dir = speaker_dir.parent.parent / "txt" / speaker_id
     results = []

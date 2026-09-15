@@ -1,4 +1,3 @@
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -32,10 +31,6 @@ class Column:
     nullable: bool = False
     primary: bool = False
     unique: bool = False
-
-    unique_groups: tuple[int, ...] = ()
-    foreign_key: tuple[str, str] | None = None
-
     default: Any = None
 
     @property
@@ -54,9 +49,9 @@ class Column:
             return None
         return f"CREATE SEQUENCE IF NOT EXISTS {self.sequence_name(table_name)} START 1;"
 
-    def definition(self, *, table_name: str, inline_primary: bool) -> str:
+    def definition(self, table_name: str) -> str:
         parts = [self.name, self.sql_type]
-        if inline_primary and self.primary:
+        if self.primary:
             parts.append("PRIMARY KEY")
         if not self.nullable:
             parts.append("NOT NULL")
@@ -105,22 +100,3 @@ class Column:
                 return json.loads(value)
             return value
         return value
-
-    def foreign_key_constraint(self) -> str | None:
-        if self.foreign_key is None:
-            return None
-        ref_table, ref_column = self.foreign_key
-        return f"FOREIGN KEY ({self.name}) REFERENCES {ref_table}({ref_column})"
-
-    @classmethod
-    def grouped_unique_names(cls, columns: tuple["Column", ...]) -> dict[int, list[str]]:
-        groups: dict[int, list[str]] = defaultdict(list)
-        for column in columns:
-            for group_id in column.unique_groups:
-                groups[group_id].append(column.name)
-        return dict(groups)
-
-    @classmethod
-    def unique_group_constraints(cls, columns: tuple["Column", ...]) -> list[str]:
-        groups = cls.grouped_unique_names(columns)
-        return [f"UNIQUE ({', '.join(names)})" for _, names in sorted(groups.items())]

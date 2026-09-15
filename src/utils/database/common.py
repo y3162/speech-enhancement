@@ -1,7 +1,8 @@
 from pathlib import Path
 import duckdb
 
-from .schema import Table
+from .connection import Connection
+from .schema import Row, Table
 
 
 def create_database(
@@ -20,3 +21,24 @@ def create_table(
 ) -> None:
     with duckdb.connect(database_path) as conn:
         conn.execute(table.get_create_table_sql())
+
+
+def open_metadata_db(
+    database_path: Path,
+    table: Table,
+    force: bool = False,
+) -> Connection:
+    create_database(database_path, force=force)
+    create_table(database_path, table)
+    return Connection(database_path)
+
+
+def import_rows(
+    database_path: Path,
+    table: Table,
+    rows: list[Row],
+    force: bool = False,
+) -> None:
+    with open_metadata_db(database_path, table, force=force) as con:
+        con.insert(table, rows)
+        con.commit()

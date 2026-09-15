@@ -35,6 +35,10 @@ def read_audio_segment(
                 dtype="float32",
                 always_2d=True,
             )
+            if audio.shape[0] == 0:
+                raise ValueError(
+                    f"Failed to read audio from {file_path} at frame {pos}"
+                )
 
             chunks.append(audio)
             remaining_frames -= audio.shape[0]
@@ -42,7 +46,5 @@ def read_audio_segment(
             if remaining_frames > 0:
                 pos = range_start_frame
                 f.seek(range_start_frame)
-            else:
-                pos += audio.shape[0]
 
     return np.concatenate(chunks, axis=0)

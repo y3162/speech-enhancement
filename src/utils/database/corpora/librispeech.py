@@ -1,55 +1,20 @@
-import os
-from concurrent.futures import (
-    FIRST_COMPLETED,
-    ThreadPoolExecutor,
-    as_completed,
-    wait,
-)
 from pathlib import Path
-from typing import (
-    Iterator,
-    List,
-)
+from typing import Iterator
 
 from ..constants import SPEECH_UTILS_CORPORA_LIBRISPEECH_DIR
 from .audio import read_audio_stream_info
 from .dto import Utterance
+from .scan import iter_in_threads, iter_speaker_chapter_transcripts
 
-
-_IO_WORKERS = min(os.cpu_count() or 1, 64)
 
 def utterance_iterator() -> Iterator[Utterance]:
-    with ThreadPoolExecutor(max_workers=_IO_WORKERS) as executor:
-        pending = set()
-        paths = iter_transcript_files(SPEECH_UTILS_CORPORA_LIBRISPEECH_DIR)
-        listing_done = False
-        in_flight_limit = _IO_WORKERS * 2
-        while pending or not listing_done:
-            while not listing_done and len(pending) < in_flight_limit:
-                transcript_file = next(paths, None)
-                if transcript_file is None:
-                    listing_done = True
-                    break
-                pending.add(executor.submit(parse_transcript_file, transcript_file))
-            if not pending:
-                break
-            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
-            for future in completed:
-                yield from future.result()
-
-
-def iter_transcript_files(root: Path) -> Iterator[Path]:
-    subsets = []
-    with os.scandir(root) as entries:
-        for subset in entries:
-            if subset.is_dir() and subset.name.startswith(("train-", "dev-", "test-")):
-                subsets.append(subset)
-    if not subsets:
-        return
-    with ThreadPoolExecutor(max_workers=len(subsets)) as executor:
-        futures = [executor.submit(_list_subset_transcripts, subset) for subset in subsets]
-        for future in as_completed(futures):
-            yield from future.result()
+    return iter_in_threads(
+        iter_speaker_chapter_transcripts(
+            SPEECH_UTILS_CORPORA_LIBRISPEECH_DIR,
+            "{speaker}-{chapter}.trans.txt",
+        ),
+        parse_transcript_file,
+    )
 
 
 """
@@ -63,25 +28,10 @@ LibriSpeech
             └── <speaker_id>-<chapter_id>.trans.txt
 """
 
-def _list_subset_transcripts(subset: os.DirEntry) -> list[Path]:
-    paths = []
-    with os.scandir(subset.path) as speakers:
-        for speaker in speakers:
-            if not speaker.is_dir():
-                continue
-            with os.scandir(speaker.path) as chapters:
-                for chapter in chapters:
-                    if not chapter.is_dir():
-                        continue
-                    transcript_path = Path(chapter.path) / f"{speaker.name}-{chapter.name}.trans.txt"
-                    assert transcript_path.exists(), f"Transcript file not found: {transcript_path}"
-                    paths.append(transcript_path)
-    return paths
-
 
 def parse_transcript_file(
     transcript_file: Path,
-) -> List[Utterance]:
+) -> list[Utterance]:
     chapter_dir = transcript_file.parent
     speaker_dir = chapter_dir.parent
     subset_name = speaker_dir.parent.name

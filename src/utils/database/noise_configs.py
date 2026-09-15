@@ -10,14 +10,8 @@ from .corpora.dto import (
     NOISES_TABLE,
     Noise,
 )
-from .connection import Connection
-from .common import (
-    create_database,
-    create_table,
-)
-from .constants import (
-    SPEECH_UTILS_DB_METADATA_PATH,
-)
+from .common import open_metadata_db
+from .constants import SPEECH_UTILS_DB_METADATA_PATH
 from .schema import Query
 
 
@@ -112,31 +106,17 @@ def build_noise_configs(noises: list[Noise]) -> list[NoiseConfig]:
 
 
 if __name__ == "__main__":
-    args = argparse.ArgumentParser()
-    args.add_argument("--force", action="store_true")
-    args = args.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args()
 
-    create_database(SPEECH_UTILS_DB_METADATA_PATH, force=args.force)
-    create_table(
+    with open_metadata_db(
         SPEECH_UTILS_DB_METADATA_PATH,
         NOISE_CONFIGS_TABLE,
-    )
-
-    BATCH_SIZE = 10_000
-
-    con = Connection(SPEECH_UTILS_DB_METADATA_PATH)
-    noises = con.fetch(Query(NOISES_TABLE), Noise)
-    if not noises:
-        raise ValueError("noises table is empty")
-
-    batch: list[NoiseConfig] = []
-    for config in build_noise_configs(noises):
-        batch.append(config)
-        if len(batch) < BATCH_SIZE:
-            continue
-        con.insert(NOISE_CONFIGS_TABLE, batch)
-        batch = []
-    if batch:
-        con.insert(NOISE_CONFIGS_TABLE, batch)
-    con.commit()
-    con.close()
+        force=args.force,
+    ) as con:
+        noises = con.fetch(Query(NOISES_TABLE), Noise)
+        if not noises:
+            raise ValueError("noises table is empty")
+        con.insert(NOISE_CONFIGS_TABLE, build_noise_configs(noises))
+        con.commit()
