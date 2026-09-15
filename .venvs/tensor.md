@@ -1,20 +1,20 @@
 [戻る](../docs/environment.md)
 ---
 
-# Quadro RTX 5000
+# NVIDIA A100-PCIE-40GB / NVIDIA A100 80GB PCIe
 
 | package | version |
 |---------|:-------:|
-| Driver version | 535.274.02 |
+| Driver version | 535.183.01 |
 | CUDA version | 12.2 |
-| CUDA toolkit (nvcc) | 11.2.67 |
+| CUDA toolkit (nvcc) | 11.0.221 |
 
 ## 仮想環境作成
 
 ```bash
 export UV_CACHE_DIR=./.venvs/.uv
-uv venv ./.venvs/turing --python 3.10
-source ./.venvs/turing/bin/activate
+uv venv ./.venvs/tensor --python 3.10
+source ./.venvs/tensor/bin/activate
 ```
 
 ## 依存パッケージインストール
@@ -33,8 +33,9 @@ uv pip install \
     duckdb \
     duckdb-cli \
     "setuptools<82" \
-    "numba==0.60.0" \
-    "llvmlite==0.43.0" \
+    "numpy<1.25" \
+    "numba==0.57.1" \
+    "llvmlite==0.40.1" \
     --index-url https://download.pytorch.org/whl/cu124 \
     --extra-index-url https://pypi.org/simple
 ```
