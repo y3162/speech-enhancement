@@ -1,0 +1,9 @@
+{
+    "workbench.colorTheme": "GitHub Dark Dimmed",
+    "workbench.iconTheme": "catppuccin-frappe",
+    "editor.cursorBlinking": "expand",
+    "workbench.editorAssociations": {
+        "*.parquet": "parquet-visualizer.parquetVisualizer",
+        "*.csv": "default"
+    }
+}

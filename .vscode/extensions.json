@@ -1,0 +1,10 @@
+{
+    "recommendations": [
+        "anysphere.remote-ssh",
+        "Catppuccin.catppuccin-vsc",
+        "Catppuccin.catppuccin-vsc-icons",
+        "oderwat.indent-rainbow",
+        "lucien-martijn.parquet-visualizer",
+        "openai.chatgpt"
+    ]
+}
