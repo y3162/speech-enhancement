@@ -1,6 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ TYPE_MAP = {
     bool: "BOOLEAN",
     Path: "TEXT",
     datetime: "TIMESTAMP",
+    dict: "TEXT",
 }
 
 _RAW_SQL_DEFAULTS = {
@@ -89,6 +91,8 @@ class Column:
             return None
         if self.type is Path:
             return str(value)
+        if self.type is dict:
+            return json.dumps(value, sort_keys=True)
         return value
 
     def from_sql_value(self, value: Any) -> Any:
@@ -96,6 +100,10 @@ class Column:
             return None
         if self.type is Path:
             return value if isinstance(value, Path) else Path(value)
+        if self.type is dict:
+            if isinstance(value, str):
+                return json.loads(value)
+            return value
         return value
 
     def foreign_key_constraint(self) -> str | None:

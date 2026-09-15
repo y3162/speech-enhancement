@@ -38,4 +38,5 @@ python -m src.utils.database.utterances --corpus librispeech --force
 python -m src.utils.database.utterances --corpus libritts --force
 python -m src.utils.database.utterances --corpus vctk --force
 python -m src.utils.database.noises --corpus demand --force
+python -m src.utils.database.noise_configs --force
 ```
