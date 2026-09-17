@@ -3,16 +3,18 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ..audio import read_audio_stream_info
-from ..db import demand_dir
+from ..db import corpora_root_dir
 from ..schema import Noise
 from .scan import iter_in_threads
 
 
 def noise_iterator() -> Iterator[Noise]:
-    return iter_in_threads(
-        iter_environment_dirs(demand_dir()),
-        parse_environment_dir,
-    )
+    environment_dirs = []
+    with os.scandir(corpora_root_dir() / "DEMAND") as entries:
+        for entry in entries:
+            if entry.is_dir():
+                environment_dirs.append(Path(entry.path))
+    return iter_in_threads(environment_dirs, parse_environment_dir)
 
 
 """
@@ -23,13 +25,6 @@ DEMAND
     ...
     └── ch16.wav
 """
-
-
-def iter_environment_dirs(root: Path) -> Iterator[Path]:
-    with os.scandir(root) as entries:
-        for entry in entries:
-            if entry.is_dir():
-                yield Path(entry.path)
 
 
 def parse_environment_dir(

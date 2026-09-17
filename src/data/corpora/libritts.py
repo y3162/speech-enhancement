@@ -2,7 +2,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ..audio import read_audio_stream_info
-from ..db import libritts_dir
+from ..db import corpora_root_dir
 from ..schema import Utterance
 from .scan import iter_in_threads, iter_speaker_chapter_transcripts
 
@@ -10,7 +10,7 @@ from .scan import iter_in_threads, iter_speaker_chapter_transcripts
 def utterance_iterator() -> Iterator[Utterance]:
     return iter_in_threads(
         iter_speaker_chapter_transcripts(
-            libritts_dir(),
+            corpora_root_dir() / "LibriTTS",
             "{speaker}_{chapter}.trans.tsv",
         ),
         parse_transcript_file,

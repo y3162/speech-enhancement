@@ -135,10 +135,8 @@ def read_flac_stream_info(audio_path: Path) -> tuple[int, int, int]:
     if len(header) < 42 or header[:4] != b"fLaC":
         raise ValueError(f"Not a FLAC file: {audio_path}")
 
-    """
-    | sample rate | channels-1 | bits/sample-1 | total samples |
-    |   20 bits   |   3 bits   |    5 bits     |    36 bits    |
-    """
+    # | sample rate | channels-1 | bits/sample-1 | total samples |
+    # |   20 bits   |   3 bits   |    5 bits     |    36 bits    |
     packed = int.from_bytes(header[18:26], "big")
     sample_rate = packed >> 44
     channels = ((packed >> 41) & 0x7) + 1

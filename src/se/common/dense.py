@@ -2,13 +2,6 @@ import torch
 import torch.nn as nn
 
 
-def _padding_2d(kernel_size: tuple[int, int], dilation: tuple[int, int] = (1, 1)) -> tuple[int, int]:
-    return (
-        int((kernel_size[0] * dilation[0] - dilation[0]) / 2),
-        int((kernel_size[1] * dilation[1] - dilation[1]) / 2),
-    )
-
-
 class DenseBlock(nn.Module):
     def __init__(self, hid_feature: int, kernel_size: tuple[int, int] = (3, 3), depth: int = 4) -> None:
         super().__init__()
@@ -22,7 +15,10 @@ class DenseBlock(nn.Module):
                         hid_feature,
                         kernel_size,
                         dilation=(dilation, 1),
-                        padding=_padding_2d(kernel_size, (dilation, 1)),
+                        padding=(
+                            int((kernel_size[0] * dilation - dilation) / 2),
+                            int((kernel_size[1] - 1) / 2),
+                        ),
                     ),
                     nn.InstanceNorm2d(hid_feature, affine=True),
                     nn.PReLU(hid_feature),

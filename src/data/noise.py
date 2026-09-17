@@ -18,11 +18,6 @@ class AdditiveStep:
     end_ratio: float
 
 
-@dataclass(frozen=True)
-class Pipeline:
-    steps: tuple[AdditiveStep, ...]
-
-
 def generate(
     clean: np.ndarray,
     sample_rate: int,
@@ -35,22 +30,9 @@ def generate(
     version = config.json["version"]
     if version != "1.0":
         raise ValueError(f"Unsupported noise config version: {version!r}")
-    return _generate_pipeline(clean, sample_rate, _parse(config.json), connection)
-
-
-def _parse(data: dict[str, Any]) -> Pipeline:
-    steps = tuple(_parse_step(step) for step in data["pipeline"])
-    return Pipeline(steps=steps)
-
-
-def _generate_pipeline(
-    clean: np.ndarray,
-    sample_rate: int,
-    pipeline: Pipeline,
-    connection: Connection,
-) -> np.ndarray:
+    steps = tuple(_parse_step(step) for step in config.json["pipeline"])
     out = np.zeros(clean.shape, dtype=np.float64)
-    for step in pipeline.steps:
+    for step in steps:
         out += _generate_additive(clean, sample_rate, step, connection)
     return out.astype(np.float32)
 

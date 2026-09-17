@@ -14,7 +14,8 @@ PCS400[160:190] = 1.161403509
 PCS400[190:202] = 1.077192982
 
 
-def _magnitude_phase(signal: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
+def cal_pcs(signal_wav: np.ndarray) -> np.ndarray:
+    signal = signal_wav.squeeze()
     signal_length = signal.shape[0]
     n_fft = 400
     padded = librosa.util.fix_length(signal, size=signal_length + n_fft // 2)
@@ -26,23 +27,14 @@ def _magnitude_phase(signal: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
         window=scipy.signal.windows.hamming(400),
     )
     mag = PCS400 * np.transpose(np.log1p(np.abs(spec)), (1, 0))
+    mag = np.transpose(mag, (1, 0))
     phase = np.angle(spec)
-    return np.transpose(mag, (1, 0)), phase, signal_length
-
-
-def _to_wav(mag: np.ndarray, phase: np.ndarray, signal_length: int) -> np.ndarray:
-    mag = np.expm1(mag)
-    reconstructed = mag * np.exp(1j * phase)
-    return librosa.istft(
+    reconstructed = np.expm1(mag) * np.exp(1j * phase)
+    pcs = librosa.istft(
         reconstructed,
         hop_length=100,
         win_length=400,
         window=scipy.signal.windows.hamming(400),
         length=signal_length,
     )
-
-
-def cal_pcs(signal_wav: np.ndarray) -> np.ndarray:
-    mag, phase, signal_length = _magnitude_phase(signal_wav.squeeze())
-    pcs = _to_wav(mag, phase, signal_length)
     return pcs / np.max(np.abs(pcs))

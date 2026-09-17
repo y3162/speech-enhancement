@@ -50,38 +50,19 @@ def _noise_split(subsets: list[str]) -> str:
     return next(iter(kinds))
 
 
-def _load_utterances(
-    connection: Connection,
-    splits: list[str],
-) -> list[Utterance]:
-    if not splits:
-        raise ValueError("utterance splits must be a non-empty list")
-    rows = fetch_utterances(connection, _LIBRISPEECH_CORPUS, splits)
-    if not rows:
-        raise ValueError("no LibriSpeech utterances found for splits: " + ", ".join(splits))
-    return rows
-
-
-def _load_noise_configs(
-    connection: Connection,
-    noise_split: str,
-    noise_config_ids: list[int] | None,
-) -> list[NoiseConfig]:
-    rows = fetch_noise_configs(connection, noise_split, noise_config_ids)
-    if not rows:
-        raise ValueError(f"no noise_configs found for split={noise_split!r} ids={noise_config_ids}")
-    return rows
-
-
 def _fetch_split(
     connection: Connection,
     splits: list[str],
     noise_config_ids: list[int] | None,
 ) -> tuple[list[Utterance], list[NoiseConfig]]:
-    return (
-        _load_utterances(connection, splits),
-        _load_noise_configs(connection, _noise_split(splits), noise_config_ids),
-    )
+    utterances = fetch_utterances(connection, _LIBRISPEECH_CORPUS, splits)
+    if not utterances:
+        raise ValueError("no LibriSpeech utterances found for splits: " + ", ".join(splits))
+    noise_split = _noise_split(splits)
+    noise_configs = fetch_noise_configs(connection, noise_split, noise_config_ids)
+    if not noise_configs:
+        raise ValueError(f"no noise_configs found for split={noise_split!r} ids={noise_config_ids}")
+    return utterances, noise_configs
 
 
 def _sample_seed(seed: int, index: int) -> int:
@@ -125,12 +106,6 @@ def _crop_or_pad(
         return clean[start:end], noisy[start:end]
     pad = (0, segment_size - length)
     return F.pad(clean, pad), F.pad(noisy, pad)
-
-
-def _apply_pcs(clean: torch.Tensor) -> torch.Tensor:
-    from src.se.common.pcs import cal_pcs
-
-    return torch.from_numpy(np.asarray(cal_pcs(clean.numpy()), dtype=np.float32))
 
 
 def pad_collate(
@@ -210,7 +185,9 @@ class AdditiveNoiseDataset(Dataset):
         if self.crop:
             clean, noisy = _crop_or_pad(clean, noisy, self.segment_size, rng)
         if self.pcs400:
-            clean = _apply_pcs(clean)
+            from src.se.common.pcs import cal_pcs
+
+            clean = torch.from_numpy(np.asarray(cal_pcs(clean.numpy()), dtype=np.float32))
         return clean, noisy
 
 

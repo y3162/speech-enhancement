@@ -64,12 +64,11 @@ class FrozenParakeetTDT06BV2(nn.Module):
         else:
             self.model.decoder.eval()
 
-    def _tokenize_batch(
+    def _pad_token_ids(
         self,
-        texts: Sequence[str],
+        token_ids: Sequence[Sequence[int]],
         device: torch.device,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        token_ids = [self.model.tokenizer.text_to_ids(text) for text in texts]
         target_lengths = torch.tensor([len(ids) for ids in token_ids], device=device, dtype=torch.int64)
         max_length = int(target_lengths.max().item())
         padded = torch.zeros((len(token_ids), max_length), device=device, dtype=torch.int64)
@@ -171,17 +170,9 @@ class FrozenParakeetTDT06BV2(nn.Module):
             idx = valid.nonzero(as_tuple=False).squeeze(1)
             waveforms = waveforms.index_select(0, idx)
             lengths = lengths.index_select(0, idx)
-            texts = [texts[int(i)] for i in idx.tolist()]
-        targets, target_lengths = self._tokenize_batch(texts, device=waveforms.device)
-        features, feature_lengths = FilterbankFeatures.forward(
-            self.model.preprocessor.featurizer,
-            waveforms.to(dtype=torch.float32),
-            lengths,
-        )
-        encoded, encoded_lengths = self.model.forward(
-            processed_signal=features,
-            processed_signal_length=feature_lengths,
-        )
+            token_id_lists = [token_id_lists[int(i)] for i in idx.tolist()]
+        targets, target_lengths = self._pad_token_ids(token_id_lists, waveforms.device)
+        encoded, encoded_lengths = self._encode(waveforms, lengths)
         decoder_outputs, _, _ = self.model.decoder(
             targets=targets,
             target_length=target_lengths,
@@ -205,8 +196,6 @@ class FrozenParakeetTDT06BV2(nn.Module):
         waveforms: torch.Tensor,
         lengths: torch.Tensor,
     ) -> tuple[torch.Tensor, Any]:
-        decoder_training = self.model.decoder.training
-        self.model.decoder.eval()
         with torch.no_grad():
             processed_signal, processed_length = self.model.preprocessor(
                 input_signal=waveforms.to(dtype=torch.float32),
@@ -216,13 +205,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
                 audio_signal=processed_signal,
                 length=processed_length,
             )
-            predictions = self.model.decoding.rnnt_decoder_predictions_tensor(
-                encoder_output=encoded,
-                encoded_lengths=encoded_length,
-                return_hypotheses=True,
-            )
-        self._set_decoder_backward_enabled(decoder_training)
-        return encoded_length, predictions
+        return encoded_length, self._rnnt_predictions(encoded, encoded_length)
 
     def align(
         self,
@@ -362,8 +345,6 @@ class FrozenParakeetTDT06BV2(nn.Module):
             idx = valid.nonzero(as_tuple=False).squeeze(1)
             waveforms_valid = waveforms.index_select(0, idx)
             lengths_valid = lengths.index_select(0, idx)
-        encoded_valid: torch.Tensor | None = None
-        encoded_length_valid: torch.Tensor | None = None
         if return_encoded:
             encoded_valid, encoded_length_valid = self._encode(waveforms_valid, lengths_valid)
             result.encoded, result.encoded_length = self._scatter_encoded(
@@ -372,15 +353,14 @@ class FrozenParakeetTDT06BV2(nn.Module):
                 idx,
                 batch_size,
             )
-        if return_recognition:
-            if return_encoded:
-                assert encoded_valid is not None and encoded_length_valid is not None
+            if return_recognition:
                 timed = self.align(
                     encoded_length_valid,
                     self._rnnt_predictions(encoded_valid, encoded_length_valid),
                     return_text=return_text,
                 )
-            else:
-                timed = self.align(*self.decode(waveforms_valid, lengths_valid), return_text=return_text)
+                result.recognition = self._scatter_recognition(timed, idx, batch_size)
+        elif return_recognition:
+            timed = self.align(*self.decode(waveforms_valid, lengths_valid), return_text=return_text)
             result.recognition = self._scatter_recognition(timed, idx, batch_size)
         return result

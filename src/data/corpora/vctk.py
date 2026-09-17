@@ -3,16 +3,18 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ..audio import read_audio_stream_info
-from ..db import vctk_dir
+from ..db import corpora_root_dir
 from ..schema import Utterance
 from .scan import iter_in_threads
 
 
 def utterance_iterator() -> Iterator[Utterance]:
-    return iter_in_threads(
-        iter_speaker_dirs(vctk_dir()),
-        parse_speaker_dir,
-    )
+    speaker_dirs = []
+    with os.scandir(corpora_root_dir() / "VCTK" / "wav48") as speakers:
+        for speaker in speakers:
+            if speaker.is_dir():
+                speaker_dirs.append(Path(speaker.path))
+    return iter_in_threads(speaker_dirs, parse_speaker_dir)
 
 
 """
@@ -26,14 +28,6 @@ VCTK
         ├── <speaker_id>_001.txt
         └── ...
 """
-
-
-def iter_speaker_dirs(root: Path) -> Iterator[Path]:
-    wav_root = root / "wav48"
-    with os.scandir(wav_root) as speakers:
-        for speaker in speakers:
-            if speaker.is_dir():
-                yield Path(speaker.path)
 
 
 def parse_speaker_dir(
@@ -59,8 +53,6 @@ def parse_speaker_dir(
             results.append(
                 Utterance(
                     corpus="VCTK",
-                    subset=None,
-                    chapter_id=None,
                     utterance_id=utterance_id,
                     speaker_id=speaker_id,
                     audio_path=audio_path,

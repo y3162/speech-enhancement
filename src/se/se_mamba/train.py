@@ -41,7 +41,6 @@ def validate(
     cfg: SimpleNamespace,
     device: torch.device,
 ) -> dict[str, float]:
-    """All generator loss terms plus PESQ; reduce shards across ranks."""
     generator.eval()
     discriminator.eval()
     stft, sample_rate = cfg.data.stft, cfg.data.sampling_rate
