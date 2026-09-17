@@ -1,6 +1,7 @@
 ## Environment
 .venvs/*
 !.venvs/*.md
+!.venvs/sitecustomize.py
 .env
 
 ## Raw Data
