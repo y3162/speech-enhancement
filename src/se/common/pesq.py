@@ -9,8 +9,7 @@ def _pesq_one(clean: np.ndarray, enhanced: np.ndarray, sample_rate: int) -> floa
         from pesq import pesq
     except ImportError as exc:
         raise ImportError(
-            "PESQ is required for validation and MetricGAN training. "
-            "Install it with: pip install pesq"
+            "PESQ is required for validation and MetricGAN training. Install it with: pip install pesq"
         ) from exc
     try:
         return float(pesq(sample_rate, clean, enhanced, "wb"))
@@ -19,18 +18,22 @@ def _pesq_one(clean: np.ndarray, enhanced: np.ndarray, sample_rate: int) -> floa
 
 
 def pesq_scores(
-    refs: list[np.ndarray],
-    ests: list[np.ndarray],
+    clean: list[np.ndarray],
+    enhanced: list[np.ndarray],
     sample_rate: int,
     num_workers: int = 1,
 ) -> list[float]:
     """Per-utterance wideband PESQ. Failed utterances are -1."""
-    pairs = list(zip(refs, ests))
+    pairs = list(zip(clean, enhanced))
     workers = max(1, int(num_workers))
     if workers == 1 or len(pairs) <= 1:
-        return [_pesq_one(ref, est, sample_rate) for ref, est in pairs]
+        return [_pesq_one(clean_utt, enhanced_utt, sample_rate) for clean_utt, enhanced_utt in pairs]
+
+    def _score(pair: tuple[np.ndarray, np.ndarray]) -> float:
+        return _pesq_one(pair[0], pair[1], sample_rate)
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        return list(executor.map(lambda p: _pesq_one(p[0], p[1], sample_rate), pairs))
+        return list(executor.map(_score, pairs))
 
 
 def pesq_batch_target(
@@ -52,11 +55,11 @@ def pesq_batch_target(
 
 
 def pesq_sum(
-    refs: list[np.ndarray],
-    ests: list[np.ndarray],
+    clean: list[np.ndarray],
+    enhanced: list[np.ndarray],
     sample_rate: int,
     num_workers: int,
 ) -> tuple[float, int]:
     """Validation: sum and count of successful PESQ scores."""
-    valid = [s for s in pesq_scores(refs, ests, sample_rate, num_workers) if s >= 0]
+    valid = [s for s in pesq_scores(clean, enhanced, sample_rate, num_workers) if s >= 0]
     return float(sum(valid)), len(valid)

@@ -13,11 +13,7 @@ class Table:
         return tuple(column for column in self.columns if column.insertable)
 
     def get_create_table_sql(self) -> str:
-        statements = [
-            sql
-            for column in self.columns
-            if (sql := column.create_sequence_sql(self.name)) is not None
-        ]
+        statements = [sql for column in self.columns if (sql := column.create_sequence_sql(self.name)) is not None]
         definitions = [column.definition(self.name) for column in self.columns]
         body = ",\n".join(f"    {definition}" for definition in definitions)
         statements.append(f"CREATE TABLE IF NOT EXISTS {self.name} (\n{body}\n);")

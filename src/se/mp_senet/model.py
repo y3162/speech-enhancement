@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,7 +11,7 @@ from src.se.common.stft import Spec, complex_from_mag_pha, stack_mag_pha
 class SPConvTranspose2d(nn.Module):
     """Sub-pixel convolution that upsamples the frequency axis by r."""
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size, r: int = 1) -> None:
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: tuple[int, int], r: int = 1) -> None:
         super().__init__()
         self.pad1 = nn.ConstantPad2d((1, 1, 0, 0), value=0.0)
         self.out_channels = out_channels
@@ -33,7 +35,7 @@ class DenseBlock(nn.Module):
         super().__init__()
         self.dense_block = nn.ModuleList()
         for i in range(depth):
-            dilation = 2 ** i
+            dilation = 2**i
             self.dense_block.append(
                 nn.Sequential(
                     nn.ConstantPad2d((1, 1, dilation, 0), value=0.0),
@@ -174,7 +176,7 @@ class TSTransformerBlock(nn.Module):
 class MPNet(nn.Module):
     """MP-SENet generator. Takes compressed mag/phase [B, F, T] and returns masked mag and estimated phase."""
 
-    def __init__(self, cfg, n_fft: int) -> None:
+    def __init__(self, cfg: SimpleNamespace, n_fft: int) -> None:
         super().__init__()
         self.dense_encoder = DenseEncoder(cfg.dense_channel)
         self.TSTransformer = nn.ModuleList(

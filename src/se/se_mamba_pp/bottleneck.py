@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,9 +17,9 @@ class FANLayer(nn.Module):
         self.input_linear_p = nn.Linear(input_dim, p_output_dim)
         self.input_linear_g = nn.Linear(input_dim, g_output_dim)
 
-    def forward(self, src: torch.Tensor) -> torch.Tensor:
-        g = F.gelu(self.input_linear_g(src))
-        p = self.input_linear_p(src)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        g = F.gelu(self.input_linear_g(x))
+        p = self.input_linear_p(x)
         return torch.cat((torch.cos(p), torch.sin(p), g), dim=-1)
 
 
@@ -31,8 +33,8 @@ class FANFFNGateFreq(nn.Module):
         self.FAN2 = FANLayer(expansion_dim, expansion_dim)
         self.Linear = nn.Linear(expansion_dim, input_dim * 2)
 
-    def forward(self, src: torch.Tensor) -> torch.Tensor:
-        x = F.gelu(src)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.gelu(x)
         x = self.FAN1(x)
         x = self.FAN2(x)
         output1, output2 = self.Linear(x).chunk(2, dim=-1)
@@ -50,9 +52,9 @@ class FANFFNGateChannel(nn.Module):
         self.FAN2 = FANLayer(expansion_dim, expansion_dim)
         self.Linear = nn.Linear(expansion_dim, input_dim * 2)
 
-    def forward(self, src: torch.Tensor) -> torch.Tensor:
-        src = F.gelu(src)
-        x = self.layernorm(src.permute(0, 2, 3, 1))
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.gelu(x)
+        x = self.layernorm(x.permute(0, 2, 3, 1))
         x = self.FAN1(x)
         x = self.FAN2(x)
         output1, output2 = self.Linear(x).chunk(2, dim=-1)
@@ -89,8 +91,8 @@ class FrequencyGLP(nn.Module):
         self.local_branch = LocalFrequencyMix(channel)
         self.linear = nn.Conv2d(channel * 2, channel, kernel_size=1)
 
-    def forward(self, src: torch.Tensor) -> torch.Tensor:
-        output = torch.cat([self.global_branch(src), self.local_branch(src)], dim=1)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        output = torch.cat([self.global_branch(x), self.local_branch(x)], dim=1)
         return self.linear(output)
 
 
@@ -135,33 +137,24 @@ def _gate(channels: int) -> nn.Sequential:
 class SEMambaPPBottleneck(nn.Module):
     """3-stage U-Net. Each stage: time Mamba, frequency GLP, channel FAN-FFN. Frequency widths (100, 50, 25) assume n_fft=400."""
 
-    def __init__(self, cfg) -> None:
+    def __init__(self, cfg: SimpleNamespace) -> None:
         super().__init__()
         hid_feature = cfg.hid_feature
         unet_expansion = cfg.unet_expansion
         features = [
             hid_feature,
             int(hid_feature * unet_expansion),
-            int(hid_feature * unet_expansion ** 2),
+            int(hid_feature * unet_expansion**2),
         ]
-        self.downsamples = nn.ModuleList(
-            [_down_conv(features[0], features[1]), _down_conv(features[1], features[2])]
-        )
+        self.downsamples = nn.ModuleList([_down_conv(features[0], features[1]), _down_conv(features[1], features[2])])
         self.time_mambas = nn.ModuleList([MambaBlock(features[i], cfg) for i in range(3)])
         self.freq_ffns = nn.ModuleList(
-            [
-                FrequencyGLP(freq_bins, channels, 2)
-                for freq_bins, channels in zip((100, 50, 25), features)
-            ]
+            [FrequencyGLP(freq_bins, channels, 2) for freq_bins, channels in zip((100, 50, 25), features)]
         )
         self.freq_layernorm = nn.ModuleList([nn.LayerNorm(features[i]) for i in range(3)])
         self.channel_ffns = nn.ModuleList([FANFFNGateChannel(features[i], 2) for i in range(3)])
-        self.tlinears = nn.ModuleList(
-            [nn.ConvTranspose1d(features[i] * 2, features[i], 1, stride=1) for i in range(3)]
-        )
-        self.upsamples = nn.ModuleList(
-            [_up_conv(features[2], features[1]), _up_conv(features[1], features[0])]
-        )
+        self.tlinears = nn.ModuleList([nn.ConvTranspose1d(features[i] * 2, features[i], 1, stride=1) for i in range(3)])
+        self.upsamples = nn.ModuleList([_up_conv(features[2], features[1]), _up_conv(features[1], features[0])])
         self.gates = nn.ModuleList([_gate(features[1]), _gate(features[0])])
 
     def _time_freq_block(self, x: torch.Tensor, level: int) -> torch.Tensor:

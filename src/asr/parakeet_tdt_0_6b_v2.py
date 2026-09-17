@@ -1,14 +1,16 @@
+from collections.abc import Sequence
 from types import SimpleNamespace
-from typing import Sequence, Tuple
+from typing import Any
 
-from omegaconf import open_dict
+import nemo.collections.asr as nemo_asr
 import torch
 import torch.nn as nn
-import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.parts.numba.rnnt_loss import TDTLossNumba
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures
 from nemo.core.utils import numba_utils
 from nemo.utils import logging as nemo_logging
+from omegaconf import open_dict
+
 nemo_logging.set_verbosity(nemo_logging.ERROR)
 numba_utils.set_numba_compat_strictness(False)
 
@@ -16,34 +18,33 @@ numba_utils.set_numba_compat_strictness(False)
 class FrozenParakeetTDT06BV2(nn.Module):
     def __init__(
         self,
-    ):
+    ) -> None:
         super().__init__()
-        self.model = nemo_asr.models.ASRModel.from_pretrained(model_name='nvidia/parakeet-tdt-0.6b-v2')
+        self.model: Any = nemo_asr.models.ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
         self.model.preprocessor.featurizer.use_grads = True
         tdt_kwargs = self.model.cfg.loss.tdt_kwargs
         self.tdt_loss = TDTLossNumba(
             blank=int(self.model.loss._blank),
             durations=[int(duration) for duration in tdt_kwargs.durations],
-            reduction='none',
+            reduction="none",
             sigma=float(tdt_kwargs.sigma),
-            omega=float(tdt_kwargs.get('omega', 0.0)),
+            omega=float(tdt_kwargs.get("omega", 0.0)),
         )
         decoding_cfg = self.model.cfg.decoding
         with open_dict(decoding_cfg):
-            decoding_cfg.strategy = 'greedy_batch'
+            decoding_cfg.strategy = "greedy_batch"
             decoding_cfg.compute_timestamps = False
             decoding_cfg.tdt_include_token_duration = True
         self.model.change_decoding_strategy(decoding_cfg)
-        self.samples_per_encoder_frame = (
-            int(self.model.preprocessor.featurizer.hop_length)
-            * int(self.model.encoder.subsampling_factor)
+        self.samples_per_encoder_frame = int(self.model.preprocessor.featurizer.hop_length) * int(
+            self.model.encoder.subsampling_factor
         )
         self.eval()
 
     def train(
         self,
         mode: bool = True,
-    ):
+    ) -> nn.Module:
         super().train(mode)
         self.model.eval()
         self._set_decoder_backward_enabled(mode)
@@ -54,7 +55,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
     def _set_decoder_backward_enabled(
         self,
         enabled: bool,
-    ):
+    ) -> None:
         if enabled:
             self.model.decoder.train()
             for module in self.model.decoder.modules():
@@ -67,20 +68,20 @@ class FrozenParakeetTDT06BV2(nn.Module):
         self,
         texts: Sequence[str],
         device: torch.device,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         token_ids = [self.model.tokenizer.text_to_ids(text) for text in texts]
         target_lengths = torch.tensor([len(ids) for ids in token_ids], device=device, dtype=torch.int64)
         max_length = int(target_lengths.max().item())
         padded = torch.zeros((len(token_ids), max_length), device=device, dtype=torch.int64)
         for i, ids in enumerate(token_ids):
             if ids:
-                padded[i, :len(ids)] = torch.tensor(ids, device=device, dtype=torch.int64)
+                padded[i, : len(ids)] = torch.tensor(ids, device=device, dtype=torch.int64)
         return padded, target_lengths
 
     def _to_int_list(
         self,
-        value,
-    ) -> list:
+        value: Any,
+    ) -> list[int]:
         if value is None:
             return []
         if torch.is_tensor(value):
@@ -91,17 +92,16 @@ class FrozenParakeetTDT06BV2(nn.Module):
 
     def _timed_recognition(
         self,
-        prediction,
+        prediction: Any,
         encoded_length: int,
         return_text: bool = True,
     ) -> SimpleNamespace:
         token_ids = self._to_int_list(prediction.y_sequence)
         starts = self._to_int_list(prediction.timestamp)
-        durations = self._to_int_list(getattr(prediction, 'token_duration', None))
+        durations = self._to_int_list(getattr(prediction, "token_duration", None))
         if not (len(token_ids) == len(starts) == len(durations)):
             raise RuntimeError(
-                'y_sequence/timestamp/token_duration lengths differ: '
-                f'{len(token_ids)}, {len(starts)}, {len(durations)}'
+                f"y_sequence/timestamp/token_duration lengths differ: {len(token_ids)}, {len(starts)}, {len(durations)}"
             )
         blank_id = int(self.model.loss._blank)
         kept = []
@@ -114,13 +114,11 @@ class FrozenParakeetTDT06BV2(nn.Module):
             end_offset = min(start_offset + max(int(duration), 1), encoded_length)
             kept.append((token_id, start_offset, end_offset))
         if return_text:
-            token_texts = self.model.decoding.decode_ids_to_tokens(
-                [token_id for token_id, _, _ in kept]
-            )
+            token_texts = self.model.decoding.decode_ids_to_tokens([token_id for token_id, _, _ in kept])
             text = prediction.text
         else:
-            token_texts = [''] * len(kept)
-            text = ''
+            token_texts = [""] * len(kept)
+            text = ""
         tokens = [
             SimpleNamespace(
                 token_id=token_id,
@@ -146,7 +144,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
         self,
     ) -> SimpleNamespace:
         return SimpleNamespace(
-            text='',
+            text="",
             encoded_length=0,
             samples_per_encoder_frame=self.samples_per_encoder_frame,
             tokens=[],
@@ -173,7 +171,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
             idx = valid.nonzero(as_tuple=False).squeeze(1)
             waveforms = waveforms.index_select(0, idx)
             lengths = lengths.index_select(0, idx)
-            texts = [texts[i] for i in idx.tolist()]
+            texts = [texts[int(i)] for i in idx.tolist()]
         targets, target_lengths = self._tokenize_batch(texts, device=waveforms.device)
         features, feature_lengths = FilterbankFeatures.forward(
             self.model.preprocessor.featurizer,
@@ -206,7 +204,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
         self,
         waveforms: torch.Tensor,
         lengths: torch.Tensor,
-    ):
+    ) -> tuple[torch.Tensor, Any]:
         decoder_training = self.model.decoder.training
         self.model.decoder.eval()
         with torch.no_grad():
@@ -229,9 +227,9 @@ class FrozenParakeetTDT06BV2(nn.Module):
     def align(
         self,
         encoded_length: torch.Tensor,
-        predictions,
+        predictions: Any,
         return_text: bool = True,
-    ) -> list:
+    ) -> list[SimpleNamespace]:
         encoded_lengths = encoded_length.detach().cpu().tolist()
         return [
             self._timed_recognition(prediction, int(encoded_lengths[i]), return_text=return_text)
@@ -242,7 +240,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
         self,
         waveforms: torch.Tensor,
         lengths: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         features, feature_lengths = FilterbankFeatures.forward(
             self.model.preprocessor.featurizer,
             waveforms.to(dtype=torch.float32),
@@ -257,7 +255,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
         self,
         waveforms: torch.Tensor,
         lengths: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size = waveforms.shape[0]
         d_model = int(self.model.encoder.d_model)
         encoded = waveforms.new_zeros(batch_size, d_model, 0) + waveforms.sum() * 0
@@ -268,9 +266,9 @@ class FrozenParakeetTDT06BV2(nn.Module):
         self,
         encoded_valid: torch.Tensor,
         encoded_length_valid: torch.Tensor,
-        idx,
+        idx: torch.Tensor | None,
         batch_size: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if idx is None:
             return encoded_valid, encoded_length_valid
         d_model = encoded_valid.shape[1]
@@ -282,10 +280,10 @@ class FrozenParakeetTDT06BV2(nn.Module):
 
     def _scatter_recognition(
         self,
-        timed: list,
-        idx,
+        timed: list[SimpleNamespace],
+        idx: torch.Tensor | None,
         batch_size: int,
-    ) -> list:
+    ) -> list[SimpleNamespace]:
         if idx is None:
             return timed
         results = [self._empty_recognition() for _ in range(batch_size)]
@@ -297,7 +295,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
         self,
         encoded: torch.Tensor,
         encoded_length: torch.Tensor,
-    ):
+    ) -> Any:
         decoder_training = self.model.decoder.training
         self.model.decoder.eval()
         with torch.no_grad():
@@ -347,7 +345,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
         )
         """
         if not return_recognition and not return_encoded:
-            raise ValueError('at least one of return_recognition and return_encoded must be True')
+            raise ValueError("at least one of return_recognition and return_encoded must be True")
         batch_size = waveforms.shape[0]
         valid = lengths > 0
         result = SimpleNamespace()
@@ -364,8 +362,8 @@ class FrozenParakeetTDT06BV2(nn.Module):
             idx = valid.nonzero(as_tuple=False).squeeze(1)
             waveforms_valid = waveforms.index_select(0, idx)
             lengths_valid = lengths.index_select(0, idx)
-        encoded_valid = None
-        encoded_length_valid = None
+        encoded_valid: torch.Tensor | None = None
+        encoded_length_valid: torch.Tensor | None = None
         if return_encoded:
             encoded_valid, encoded_length_valid = self._encode(waveforms_valid, lengths_valid)
             result.encoded, result.encoded_length = self._scatter_encoded(
@@ -376,6 +374,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
             )
         if return_recognition:
             if return_encoded:
+                assert encoded_valid is not None and encoded_length_valid is not None
                 timed = self.align(
                     encoded_length_valid,
                     self._rnnt_predictions(encoded_valid, encoded_length_valid),

@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import NamedTuple
 
 import torch
@@ -21,7 +22,7 @@ def stack_mag_pha(mag: torch.Tensor, pha: torch.Tensor) -> torch.Tensor:
     )
 
 
-def mag_pha_stft(waveform: torch.Tensor, stft, eps: float | None = None) -> Spec:
+def mag_pha_stft(waveform: torch.Tensor, stft: SimpleNamespace, eps: float | None = None) -> Spec:
     """Compressed magnitude, phase, and complex spec from a [B, T] waveform.
 
     If eps is set, it is added inside sqrt / atan2 so zero bins do not produce NaN gradients.
@@ -53,7 +54,7 @@ def mag_pha_stft(waveform: torch.Tensor, stft, eps: float | None = None) -> Spec
 def mag_pha_istft(
     mag: torch.Tensor,
     pha: torch.Tensor,
-    stft,
+    stft: SimpleNamespace,
     length: int | None = None,
 ) -> torch.Tensor:
     mag = torch.pow(mag, 1.0 / stft.compress_factor)

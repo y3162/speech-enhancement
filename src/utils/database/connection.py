@@ -1,10 +1,12 @@
 import csv
 import os
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
+
 import duckdb
 
-from .schema import Query, Row, Table
+from .schema import Query, Row, RowT, Table
 
 
 class Connection:
@@ -12,11 +14,11 @@ class Connection:
         self._conn = duckdb.connect(database_path, read_only=read_only)
         self._pending: dict[str, tuple[Table, list[Row]]] = {}
 
-    def insert(self, table: Table, rows: Row | list[Row]) -> None:
+    def insert(self, table: Table, rows: Row | Sequence[Row]) -> None:
         if isinstance(rows, Row):
             rows = [rows]
-        elif not isinstance(rows, list):
-            raise TypeError(f"Expected Row or list[Row], got {type(rows).__name__}")
+        else:
+            rows = list(rows)
         if not rows:
             return
         for row in rows:
@@ -26,7 +28,7 @@ class Connection:
             self._pending[table.name] = (table, [])
         self._pending[table.name][1].extend(rows)
 
-    def fetch(self, query: Query, row_type: type[Row]) -> list[Row]:
+    def fetch(self, query: Query, row_type: type[RowT]) -> list[RowT]:
         sql, params = query.build()
         result = self._conn.execute(sql, params).fetchall()
         columns = query.row_columns
@@ -48,10 +50,7 @@ class Connection:
                 writer = csv.writer(csv_file, lineterminator="\n")
                 writer.writerow(names)
                 for row in rows:
-                    writer.writerow(
-                        "" if value is None else value
-                        for value in row.insert_params(columns)
-                    )
+                    writer.writerow("" if value is None else value for value in row.insert_params(columns))
             column_list = ", ".join(names)
             escaped_path = csv_path.replace("'", "''")
             self._conn.execute(

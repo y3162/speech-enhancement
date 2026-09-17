@@ -1,6 +1,6 @@
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..constants import SPEECH_UTILS_CORPORA_DEMAND_DIR
 from .audio import read_audio_stream_info

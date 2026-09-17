@@ -18,3 +18,4 @@ alwaysApply: false
 - `FrequencyGLP` の周波数幅 `(100, 50, 25)` は `n_fft=400` 固定。`DiscriminatorCQT` の `fs = 16000` は config と独立。
 - `data.pcs400` は SEMamba の学習用 clean にだけ適用（検証には適用しない）。`cal_pcs` は末尾で peak 正規化する。
 - config の `train.batch_size` は GPU あたり。`data.normalize` は energy（MP-SENet / SEMamba）と peak（SEMamba++）。
+- 命名: 設定オブジェクトは `cfg`（CLI `--config` / `config.json` は維持）。波形は `clean_audio` / `noisy_audio` / `enhanced_audio`。スペクトルは `clean` / `noisy` / `gen` / `gen_hat`。モジュールは `generator` / `discriminator`。最適化は `optim_g` / `optim_d`。損失重みは `weights`（`cfg.train.loss`）。JSON の `sampling_rate` は変えず、Hz を取る関数引数は `sample_rate`。

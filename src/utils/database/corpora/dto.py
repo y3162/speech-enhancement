@@ -8,7 +8,6 @@ from ..schema import (
     Table,
 )
 
-
 UTTERANCES_TABLE = Table(
     name="utterances",
     columns=(

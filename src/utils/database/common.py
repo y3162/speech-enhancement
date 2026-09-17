@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import duckdb
 
 from .connection import Connection

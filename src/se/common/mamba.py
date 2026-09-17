@@ -1,4 +1,5 @@
 from functools import partial
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
@@ -8,7 +9,7 @@ from mamba_ssm.modules.mamba_simple import Mamba
 from mamba_ssm.ops.triton.layer_norm import RMSNorm
 
 
-def create_block(d_model: int, cfg) -> Block:
+def _create_block(d_model: int, cfg: SimpleNamespace) -> Block:
     mixer_cls = partial(
         Mamba,
         layer_idx=0,
@@ -20,21 +21,21 @@ def create_block(d_model: int, cfg) -> Block:
         d_model,
         mixer_cls,
         mlp_cls=nn.Identity,
-        norm_cls=partial(RMSNorm, eps=cfg.norm_epsilon),
+        norm_cls=partial(RMSNorm, eps=cfg.norm_epsilon),  # type: ignore[arg-type]
         fused_add_norm=False,
         residual_in_fp32=False,
     )
-    block.layer_idx = 0
+    block.layer_idx = 0  # type: ignore[arg-type]
     return block
 
 
 class MambaBlock(nn.Module):
     """Bidirectional Mamba. [B, L, C] -> [B, L, 2C] by concatenating forward and backward outputs."""
 
-    def __init__(self, in_channels: int, cfg) -> None:
+    def __init__(self, in_channels: int, cfg: SimpleNamespace) -> None:
         super().__init__()
-        self.forward_block = create_block(in_channels, cfg)
-        self.backward_block = create_block(in_channels, cfg)
+        self.forward_block = _create_block(in_channels, cfg)
+        self.backward_block = _create_block(in_channels, cfg)
         self.apply(partial(_init_weights, n_layer=1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

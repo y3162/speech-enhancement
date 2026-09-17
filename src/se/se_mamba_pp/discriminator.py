@@ -7,7 +7,11 @@ from torch.nn.utils import weight_norm
 from torchaudio.transforms import Resample
 
 
-def _pair_outputs(discriminators, y: torch.Tensor, y_hat: torch.Tensor):
+def _pair_outputs(
+    discriminators: nn.ModuleList,
+    y: torch.Tensor,
+    y_hat: torch.Tensor,
+) -> tuple[list[torch.Tensor], list[torch.Tensor], list[list[torch.Tensor]], list[list[torch.Tensor]]]:
     y_d_rs = []
     y_d_gs = []
     fmap_rs = []
@@ -22,7 +26,7 @@ def _pair_outputs(discriminators, y: torch.Tensor, y_hat: torch.Tensor):
     return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
-def conv2d_padding(
+def _conv2d_padding(
     kernel_size: tuple[int, int],
     dilation: tuple[int, int] = (1, 1),
 ) -> tuple[int, int]:
@@ -60,7 +64,7 @@ class DiscriminatorCQT(nn.Module):
                     in_channels,
                     in_channels,
                     kernel_size=kernel_size,
-                    padding=conv2d_padding(kernel_size),
+                    padding=_conv2d_padding(kernel_size),
                 )
                 for _ in range(n_octaves)
             ]
@@ -71,7 +75,7 @@ class DiscriminatorCQT(nn.Module):
                 in_channels,
                 filters,
                 kernel_size=kernel_size,
-                padding=conv2d_padding(kernel_size),
+                padding=_conv2d_padding(kernel_size),
             )
         )
         for dilation in dilations:
@@ -83,7 +87,7 @@ class DiscriminatorCQT(nn.Module):
                         kernel_size=kernel_size,
                         stride=stride,
                         dilation=(dilation, 1),
-                        padding=conv2d_padding(kernel_size, (dilation, 1)),
+                        padding=_conv2d_padding(kernel_size, (dilation, 1)),
                     )
                 )
             )
@@ -94,7 +98,7 @@ class DiscriminatorCQT(nn.Module):
                     filters,
                     filters,
                     kernel_size=square_kernel,
-                    padding=conv2d_padding(square_kernel),
+                    padding=_conv2d_padding(square_kernel),
                 )
             )
         )
@@ -103,7 +107,7 @@ class DiscriminatorCQT(nn.Module):
                 filters,
                 1,
                 kernel_size=square_kernel,
-                padding=conv2d_padding(square_kernel),
+                padding=_conv2d_padding(square_kernel),
             )
         )
         self.activation = nn.LeakyReLU(negative_slope=0.1)
@@ -143,13 +147,13 @@ class MultiScaleSubbandCQTDiscriminator(nn.Module):
                     n_octaves=n_octave,
                     bins_per_octave=bins_per_octave,
                 )
-                for hop_length, n_octave, bins_per_octave in zip(
-                    hop_lengths, n_octaves, bins_per_octaves
-                )
+                for hop_length, n_octave, bins_per_octave in zip(hop_lengths, n_octaves, bins_per_octaves)
             ]
         )
 
-    def forward(self, y: torch.Tensor, y_hat: torch.Tensor):
+    def forward(
+        self, y: torch.Tensor, y_hat: torch.Tensor
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor], list[list[torch.Tensor]], list[list[torch.Tensor]]]:
         return _pair_outputs(self.discriminators, y, y_hat)
 
 
@@ -164,15 +168,9 @@ class DiscriminatorR(nn.Module):
         self.convs = nn.ModuleList(
             [
                 weight_norm(nn.Conv2d(1, channels, (3, 9), padding=(1, 4))),
-                weight_norm(
-                    nn.Conv2d(channels, channels, (3, 9), stride=(1, 2), padding=(1, 4))
-                ),
-                weight_norm(
-                    nn.Conv2d(channels, channels, (3, 9), stride=(1, 2), padding=(1, 4))
-                ),
-                weight_norm(
-                    nn.Conv2d(channels, channels, (3, 9), stride=(1, 2), padding=(1, 4))
-                ),
+                weight_norm(nn.Conv2d(channels, channels, (3, 9), stride=(1, 2), padding=(1, 4))),
+                weight_norm(nn.Conv2d(channels, channels, (3, 9), stride=(1, 2), padding=(1, 4))),
+                weight_norm(nn.Conv2d(channels, channels, (3, 9), stride=(1, 2), padding=(1, 4))),
                 weight_norm(nn.Conv2d(channels, channels, (3, 3), padding=(1, 1))),
             ]
         )
@@ -214,13 +212,12 @@ class MultiResolutionDiscriminator(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [
-                DiscriminatorR(resolution)
-                for resolution in [[1024, 120, 600], [2048, 240, 1200], [512, 50, 240]]
-            ]
+            [DiscriminatorR(resolution) for resolution in [[1024, 120, 600], [2048, 240, 1200], [512, 50, 240]]]
         )
 
-    def forward(self, y: torch.Tensor, y_hat: torch.Tensor):
+    def forward(
+        self, y: torch.Tensor, y_hat: torch.Tensor
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor], list[list[torch.Tensor]], list[list[torch.Tensor]]]:
         return _pair_outputs(self.discriminators, y, y_hat)
 
 

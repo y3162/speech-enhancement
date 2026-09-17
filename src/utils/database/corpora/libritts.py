@@ -1,5 +1,5 @@
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..constants import SPEECH_UTILS_CORPORA_LIBRITTS_DIR
 from .audio import read_audio_stream_info
@@ -39,13 +39,13 @@ def parse_transcript_file(
     chapter_id = chapter_dir.name
     prefix = f"{speaker_id}_{chapter_id}_"
     results = []
-    with open(transcript_file, "r") as f:
+    with open(transcript_file) as f:
         for line in f:
             utt_key, _, rest = line.strip().partition("\t")
             _, _, transcript = rest.partition("\t")
             audio_path = chapter_dir / (utt_key + ".wav")
             assert utt_key.startswith(prefix), f"Unexpected utterance id: {utt_key}"
-            utterance_id = utt_key[len(prefix):]
+            utterance_id = utt_key[len(prefix) :]
             sample_rate, frames, channels = read_audio_stream_info(audio_path)
             results.append(
                 Utterance(

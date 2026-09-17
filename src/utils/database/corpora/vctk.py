@@ -1,6 +1,6 @@
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..constants import SPEECH_UTILS_CORPORA_VCTK_DIR
 from .audio import read_audio_stream_info
@@ -50,10 +50,10 @@ def parse_speaker_dir(
             stem = audio_path.stem
             prefix = f"{speaker_id}_"
             assert stem.startswith(prefix), f"Unexpected utterance id: {stem}"
-            utterance_id = stem[len(prefix):]
+            utterance_id = stem[len(prefix) :]
             transcript_path = txt_dir / f"{stem}.txt"
             assert transcript_path.exists(), f"Transcript file not found: {transcript_path}"
-            with open(transcript_path, "r") as f:
+            with open(transcript_path) as f:
                 transcript = f.read().strip()
             sample_rate, frames, channels = read_audio_stream_info(audio_path)
             results.append(

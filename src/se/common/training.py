@@ -1,4 +1,5 @@
 """Shared helpers for train scripts. Loops and G/D updates stay in each model's train.py."""
+
 import argparse
 import json
 import os
@@ -11,8 +12,8 @@ from typing import Any
 import numpy as np
 import torch
 import torch.distributed as dist
-from torch.utils.data import DataLoader, DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from torch.utils.tensorboard.writer import SummaryWriter
 
 from src.se.common.dataset import pad_collate, worker_init_fn
 
@@ -72,7 +73,7 @@ def seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def start_run(run_dir: Path, config: SimpleNamespace, rank: int) -> SummaryWriter | None:
+def start_run(run_dir: Path, cfg: SimpleNamespace, rank: int) -> SummaryWriter | None:
     """Rank 0 creates run_dir, writes config.json, and opens a TensorBoard writer."""
     if rank != 0:
         return None
@@ -80,12 +81,16 @@ def start_run(run_dir: Path, config: SimpleNamespace, rank: int) -> SummaryWrite
     saved = run_dir / "config.json"
     if not saved.is_file():
         with open(saved, "w", encoding="utf-8") as f:
-            json.dump(to_dict(config), f, indent=4)
+            json.dump(to_dict(cfg), f, indent=4)
     return SummaryWriter(str(run_dir / "logs"))
 
 
-def build_loaders(trainset, validset, train) -> tuple[DataLoader, DataLoader]:
-    train_kwargs = {}
+def build_loaders(
+    trainset: Dataset,
+    validset: Dataset,
+    train: SimpleNamespace,
+) -> tuple[DataLoader, DataLoader]:
+    train_kwargs: dict[str, Any] = {}
     if train.num_workers > 0:
         train_kwargs["persistent_workers"] = True
         train_kwargs["prefetch_factor"] = train.prefetch_factor
@@ -110,7 +115,7 @@ def build_loaders(trainset, validset, train) -> tuple[DataLoader, DataLoader]:
     return train_loader, valid_loader
 
 
-def load_checkpoint(run_dir: Path, device: torch.device) -> dict | None:
+def load_checkpoint(run_dir: Path, device: torch.device) -> dict[str, Any] | None:
     path = run_dir / "latest.pt"
     if not path.is_file():
         return None
@@ -128,15 +133,20 @@ def unpadded(
     enhanced: torch.Tensor,
     lengths: torch.Tensor,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    refs, ests = [], []
+    clean_list, enhanced_list = [], []
     for i in range(clean.size(0)):
         length = min(int(lengths[i]), int(enhanced.size(1)))
-        refs.append(clean[i, :length].detach().cpu().numpy())
-        ests.append(enhanced[i, :length].detach().cpu().numpy())
-    return refs, ests
+        clean_list.append(clean[i, :length].detach().cpu().numpy())
+        enhanced_list.append(enhanced[i, :length].detach().cpu().numpy())
+    return clean_list, enhanced_list
 
 
-def log_scalars(writer: SummaryWriter | None, prefix: str, values: dict, step: int) -> None:
+def log_scalars(
+    writer: SummaryWriter | None,
+    prefix: str,
+    values: dict[str, Any],
+    step: int,
+) -> None:
     if writer is None:
         return
     for name, value in values.items():

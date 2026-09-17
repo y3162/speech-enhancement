@@ -12,10 +12,7 @@ def generate(
     connection: Connection,
 ) -> np.ndarray:
     if clean.ndim != 2 or clean.shape[0] < 1 or clean.shape[1] < 1:
-        raise ValueError(
-            "clean must be a non-empty 2D array (frames, channels), "
-            f"got shape {clean.shape}"
-        )
+        raise ValueError(f"clean must be a non-empty 2D array (frames, channels), got shape {clean.shape}")
 
     version = config.json["version"]
     if version != "1.0":

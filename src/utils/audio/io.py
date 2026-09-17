@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import numpy as np
 import soundfile as sf
 
@@ -20,9 +21,7 @@ def read_audio_segment(
             range_end_frame = len(f)
         range_len = range_end_frame - range_start_frame
         if range_len < 1:
-            raise ValueError(
-                f"Invalid range [{range_start_frame}, {range_end_frame})"
-            )
+            raise ValueError(f"Invalid range [{range_start_frame}, {range_end_frame})")
 
         start_frame %= range_len
         pos = range_start_frame + start_frame
@@ -36,9 +35,7 @@ def read_audio_segment(
                 always_2d=True,
             )
             if audio.shape[0] == 0:
-                raise ValueError(
-                    f"Failed to read audio from {file_path} at frame {pos}"
-                )
+                raise ValueError(f"Failed to read audio from {file_path} at frame {pos}")
 
             chunks.append(audio)
             remaining_frames -= audio.shape[0]

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 
-def padding_2d(kernel_size: tuple[int, int], dilation: tuple[int, int] = (1, 1)) -> tuple[int, int]:
+def _padding_2d(kernel_size: tuple[int, int], dilation: tuple[int, int] = (1, 1)) -> tuple[int, int]:
     return (
         int((kernel_size[0] * dilation[0] - dilation[0]) / 2),
         int((kernel_size[1] * dilation[1] - dilation[1]) / 2),
@@ -14,7 +14,7 @@ class DenseBlock(nn.Module):
         super().__init__()
         self.dense_block = nn.ModuleList()
         for i in range(depth):
-            dilation = 2 ** i
+            dilation = 2**i
             self.dense_block.append(
                 nn.Sequential(
                     nn.Conv2d(
@@ -22,7 +22,7 @@ class DenseBlock(nn.Module):
                         hid_feature,
                         kernel_size,
                         dilation=(dilation, 1),
-                        padding=padding_2d(kernel_size, (dilation, 1)),
+                        padding=_padding_2d(kernel_size, (dilation, 1)),
                     ),
                     nn.InstanceNorm2d(hid_feature, affine=True),
                     nn.PReLU(hid_feature),

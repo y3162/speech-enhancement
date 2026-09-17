@@ -11,24 +11,16 @@ class MetricDiscriminator(nn.Module):
     def __init__(self, dim: int = 16, in_channel: int = 2) -> None:
         super().__init__()
         self.layers = nn.Sequential(
-            spectral_norm(
-                nn.Conv2d(in_channel, dim, (4, 4), (2, 2), (1, 1), bias=False)
-            ),
+            spectral_norm(nn.Conv2d(in_channel, dim, (4, 4), (2, 2), (1, 1), bias=False)),
             nn.InstanceNorm2d(dim, affine=True),
             nn.PReLU(dim),
-            spectral_norm(
-                nn.Conv2d(dim, dim * 2, (4, 4), (2, 2), (1, 1), bias=False)
-            ),
+            spectral_norm(nn.Conv2d(dim, dim * 2, (4, 4), (2, 2), (1, 1), bias=False)),
             nn.InstanceNorm2d(dim * 2, affine=True),
             nn.PReLU(dim * 2),
-            spectral_norm(
-                nn.Conv2d(dim * 2, dim * 4, (4, 4), (2, 2), (1, 1), bias=False)
-            ),
+            spectral_norm(nn.Conv2d(dim * 2, dim * 4, (4, 4), (2, 2), (1, 1), bias=False)),
             nn.InstanceNorm2d(dim * 4, affine=True),
             nn.PReLU(dim * 4),
-            spectral_norm(
-                nn.Conv2d(dim * 4, dim * 8, (4, 4), (2, 2), (1, 1), bias=False)
-            ),
+            spectral_norm(nn.Conv2d(dim * 4, dim * 8, (4, 4), (2, 2), (1, 1), bias=False)),
             nn.InstanceNorm2d(dim * 8, affine=True),
             nn.PReLU(dim * 8),
             nn.AdaptiveMaxPool2d(1),

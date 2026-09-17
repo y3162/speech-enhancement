@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -94,10 +94,7 @@ def _parse_noise_valid_range(value: dict[str, Any]) -> tuple[float, float]:
     start_ratio = _parse_ratio(value["start_ratio"], "start_ratio")
     end_ratio = _parse_ratio(value["end_ratio"], "end_ratio")
     if not 0.0 <= start_ratio < end_ratio <= 1.0:
-        raise ValueError(
-            f"Invalid noise_valid_range: start_ratio={start_ratio}, "
-            f"end_ratio={end_ratio}"
-        )
+        raise ValueError(f"Invalid noise_valid_range: start_ratio={start_ratio}, end_ratio={end_ratio}")
     return start_ratio, end_ratio
 
 
@@ -109,23 +106,15 @@ def _generate_additive(
 ) -> np.ndarray:
     noise_row = _fetch_noise(connection, step.noise_id)
     if noise_row.sample_rate != sample_rate:
-        raise ValueError(
-            f"Noise id {step.noise_id} sample_rate {noise_row.sample_rate} "
-            f"does not match {sample_rate}"
-        )
+        raise ValueError(f"Noise id {step.noise_id} sample_rate {noise_row.sample_rate} does not match {sample_rate}")
     if noise_row.frames is None or noise_row.frames < 1:
-        raise ValueError(
-            f"Noise id {step.noise_id} has invalid frames: {noise_row.frames}"
-        )
+        raise ValueError(f"Noise id {step.noise_id} has invalid frames: {noise_row.frames}")
 
     range_start = math.floor(step.start_ratio * noise_row.frames)
     range_end = math.floor(step.end_ratio * noise_row.frames)
     range_len = range_end - range_start
     if range_len < 1:
-        raise ValueError(
-            f"Noise id {step.noise_id} has empty valid range "
-            f"[{range_start}, {range_end})"
-        )
+        raise ValueError(f"Noise id {step.noise_id} has empty valid range [{range_start}, {range_end})")
 
     rng = np.random.default_rng(step.seed)
     start_frame = int(rng.integers(0, range_len))
@@ -138,8 +127,7 @@ def _generate_additive(
     )
     if noise.shape[1] != clean.shape[1]:
         raise ValueError(
-            f"Noise id {step.noise_id} channels {noise.shape[1]} "
-            f"do not match clean channels {clean.shape[1]}"
+            f"Noise id {step.noise_id} channels {noise.shape[1]} do not match clean channels {clean.shape[1]}"
         )
     return _scale_to_snr(clean, noise, step.snr_db)
 

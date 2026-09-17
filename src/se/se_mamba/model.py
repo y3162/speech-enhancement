@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import torch
 import torch.nn as nn
 
@@ -10,7 +12,7 @@ from src.se.common.stft import Spec, complex_from_mag_pha, stack_mag_pha
 class TFMambaBlock(nn.Module):
     """Bidirectional Mamba along time then frequency. I/O [B, C, T, F]."""
 
-    def __init__(self, cfg) -> None:
+    def __init__(self, cfg: SimpleNamespace) -> None:
         super().__init__()
         hid_feature = cfg.hid_feature
         self.time_mamba = MambaBlock(hid_feature, cfg)
@@ -30,7 +32,7 @@ class TFMambaBlock(nn.Module):
 class SEMamba(nn.Module):
     """SEMamba generator. Multiplies the mask by noisy magnitude and estimates phase."""
 
-    def __init__(self, cfg, n_fft: int) -> None:
+    def __init__(self, cfg: SimpleNamespace, n_fft: int) -> None:
         super().__init__()
         self.dense_encoder = DenseEncoder(cfg.hid_feature)
         self.TSMamba = nn.ModuleList([TFMambaBlock(cfg) for _ in range(cfg.num_tfmamba)])

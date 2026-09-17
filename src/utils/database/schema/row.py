@@ -1,6 +1,7 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Sequence, TypeVar
+from typing import Any, TypeVar
 
 from .column import Column
 
@@ -27,8 +28,5 @@ class Row:
         columns: tuple[Column, ...],
         values: Sequence[Any],
     ) -> RowT:
-        kwargs = {
-            column.name: column.from_sql_value(value)
-            for column, value in zip(columns, values, strict=True)
-        }
+        kwargs = {column.name: column.from_sql_value(value) for column, value in zip(columns, values, strict=True)}
         return cls(**kwargs)

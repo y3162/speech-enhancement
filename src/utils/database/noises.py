@@ -1,12 +1,11 @@
 import argparse
 
-from .corpora.dto import NOISES_TABLE
+from .common import import_rows
+from .constants import SPEECH_UTILS_DB_METADATA_PATH
 from .corpora import (
     demand_noise_iterator,
 )
-from .common import import_rows
-from .constants import SPEECH_UTILS_DB_METADATA_PATH
-
+from .corpora.dto import NOISES_TABLE
 
 CORPUS_ITERATORS = {
     "demand": demand_noise_iterator,

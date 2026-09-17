@@ -1,16 +1,18 @@
+from types import SimpleNamespace
+
 import torch
 import torch.nn as nn
 
 from src.se.common.activations import LearnableSoftplus
 from src.se.common.dense import DenseEncoder, MagDecoder, PhaseDecoder
-from src.se.se_mamba_pp.bottleneck import SEMambaPPBottleneck
 from src.se.common.stft import Spec, complex_from_mag_pha, stack_mag_pha
+from src.se.se_mamba_pp.bottleneck import SEMambaPPBottleneck
 
 
 class SEMambaPP(nn.Module):
     """SEMamba++ generator. Unlike SEMamba, decoder output is the magnitude (not multiplied by noisy mag)."""
 
-    def __init__(self, cfg, n_fft: int) -> None:
+    def __init__(self, cfg: SimpleNamespace, n_fft: int) -> None:
         super().__init__()
         self.dense_encoder = DenseEncoder(cfg.hid_feature)
         self.TSMamba = nn.ModuleList([SEMambaPPBottleneck(cfg) for _ in range(cfg.num_tfmamba)])

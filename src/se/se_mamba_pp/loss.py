@@ -1,13 +1,15 @@
 from functools import lru_cache
+from types import SimpleNamespace
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from librosa.filters import mel as librosa_mel_fn
 
 from src.se.common.phase_loss import phase_loss_gradient_matrix
-from src.se.se_mamba_pp.discriminator import DiscriminatorOutputs
 from src.se.common.stft import Spec
+from src.se.se_mamba_pp.discriminator import DiscriminatorOutputs
 
 
 class MultiScaleMelSpectrogramLoss(nn.Module):
@@ -22,8 +24,14 @@ class MultiScaleMelSpectrogramLoss(nn.Module):
 
     @staticmethod
     @lru_cache(None)
-    def get_mel_filters(sr, n_fft, n_mels, fmin, fmax):
-        return librosa_mel_fn(sr=sr, n_fft=n_fft, n_mels=n_mels, fmin=fmin, fmax=fmax)
+    def get_mel_filters(
+        sample_rate: int,
+        n_fft: int,
+        n_mels: int,
+        fmin: float,
+        fmax: float | None,
+    ) -> np.ndarray:
+        return librosa_mel_fn(sr=sample_rate, n_fft=n_fft, n_mels=n_mels, fmin=fmin, fmax=fmax)
 
     def mel_spectrogram(self, wav: torch.Tensor, n_mels: int, window_length: int) -> torch.Tensor:
         batch, channels, time = wav.shape
@@ -37,13 +45,13 @@ class MultiScaleMelSpectrogramLoss(nn.Module):
         )
         _, n_freq, n_time = stft.shape
         magnitude = torch.abs(stft.reshape(batch, channels, n_freq, n_time))
-        mel_basis = torch.from_numpy(
-            self.get_mel_filters(self.sampling_rate, 2 * (n_freq - 1), n_mels, 0, None)
-        ).to(wav.device)
+        mel_basis = torch.from_numpy(self.get_mel_filters(self.sampling_rate, 2 * (n_freq - 1), n_mels, 0, None)).to(
+            wav.device
+        )
         return (magnitude.transpose(2, -1) @ mel_basis.T).transpose(-1, 2)
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        loss = 0.0
+        loss = torch.zeros((), device=x.device, dtype=x.dtype)
         log10 = torch.log(torch.tensor(10.0, device=x.device, dtype=x.dtype))
         for n_mels, window_length in zip(self.n_mels, self.window_lengths):
             x_logmels = torch.log(self.mel_spectrogram(x, n_mels, window_length).clamp(min=self.clamp_eps)) / log10
@@ -56,10 +64,10 @@ def feature_loss(
     fmap_r: list[list[torch.Tensor]],
     fmap_g: list[list[torch.Tensor]],
 ) -> torch.Tensor:
-    loss = 0
+    loss = torch.tensor(0.0)
     for real_maps, fake_maps in zip(fmap_r, fmap_g):
         for real, fake in zip(real_maps, fake_maps):
-            loss += torch.mean(torch.abs(real - fake))
+            loss = loss + torch.mean(torch.abs(real - fake))
     return loss * 2
 
 
@@ -67,14 +75,14 @@ def lsgan_discriminator_loss(
     disc_real_outputs: list[torch.Tensor],
     disc_generated_outputs: list[torch.Tensor],
 ) -> torch.Tensor:
-    loss = 0
+    loss = torch.tensor(0.0)
     for real, fake in zip(disc_real_outputs, disc_generated_outputs):
-        loss = loss + torch.mean((1 - real) ** 2) + torch.mean(fake ** 2)
+        loss = loss + torch.mean((1 - real) ** 2) + torch.mean(fake**2)
     return loss
 
 
 def lsgan_generator_loss(disc_outputs: list[torch.Tensor]) -> torch.Tensor:
-    loss = 0
+    loss = torch.tensor(0.0)
     for fake in disc_outputs:
         loss = loss + torch.mean((1 - fake) ** 2)
     return loss
@@ -96,7 +104,7 @@ def generator_loss(
     gen_hat: Spec,
     d: DiscriminatorOutputs,
     mel: torch.Tensor,
-    w,
+    weights: SimpleNamespace,
     n_fft: int,
 ) -> dict[str, torch.Tensor]:
     """SEMamba++ generator loss: adversarial, feature matching, mel, and spectral terms. No time term."""
@@ -111,12 +119,12 @@ def generator_loss(
         "mel": mel,
     }
     losses["total"] = (
-        w.magnitude * losses["magnitude"]
-        + w.phase * losses["phase"]
-        + w.complex * losses["complex"]
-        + w.consistency * losses["consistency"]
-        + w.adv_g * losses["adv_g"]
-        + w.fm_g * losses["fm_g"]
-        + w.mel * losses["mel"]
+        weights.magnitude * losses["magnitude"]
+        + weights.phase * losses["phase"]
+        + weights.complex * losses["complex"]
+        + weights.consistency * losses["consistency"]
+        + weights.adv_g * losses["adv_g"]
+        + weights.fm_g * losses["fm_g"]
+        + weights.mel * losses["mel"]
     )
     return losses

@@ -1,5 +1,5 @@
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..constants import SPEECH_UTILS_CORPORA_LIBRISPEECH_DIR
 from .audio import read_audio_stream_info
@@ -38,7 +38,7 @@ def parse_transcript_file(
     speaker_id = speaker_dir.name
     chapter_id = chapter_dir.name
     results = []
-    with open(transcript_file, "r") as f:
+    with open(transcript_file) as f:
         for line in f:
             utt_key, _, transcript = line.strip().partition(" ")
             audio_path = chapter_dir / (utt_key + ".flac")

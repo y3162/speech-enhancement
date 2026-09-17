@@ -1,14 +1,13 @@
 import argparse
 
-from .corpora.dto import UTTERANCES_TABLE
+from .common import import_rows
+from .constants import SPEECH_UTILS_DB_METADATA_PATH
 from .corpora import (
     librispeech_utterance_iterator,
     libritts_utterance_iterator,
     vctk_utterance_iterator,
 )
-from .common import import_rows
-from .constants import SPEECH_UTILS_DB_METADATA_PATH
-
+from .corpora.dto import UTTERANCES_TABLE
 
 CORPUS_ITERATORS = {
     "librispeech": librispeech_utterance_iterator,

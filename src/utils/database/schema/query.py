@@ -1,5 +1,6 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Sequence
+from typing import Any
 
 from .column import Column
 from .table import Table
@@ -15,10 +16,7 @@ class Query:
 
     def where(self, sql: str, *params: Any) -> "Query":
         if sql.count("?") != len(params):
-            raise ValueError(
-                f"Placeholder count ({sql.count('?')}) does not match "
-                f"parameter count ({len(params)})"
-            )
+            raise ValueError(f"Placeholder count ({sql.count('?')}) does not match parameter count ({len(params)})")
         return replace(
             self,
             conditions=self.conditions + (sql,),
@@ -44,9 +42,7 @@ class Query:
         return self.table.columns
 
     def build(self) -> tuple[str, tuple[Any, ...]]:
-        columns = ", ".join(
-            f"{self.table.name}.{column.name}" for column in self.table.columns
-        )
+        columns = ", ".join(f"{self.table.name}.{column.name}" for column in self.table.columns)
         parts = [f"SELECT {columns} FROM {self.table.name}"]
         if self.conditions:
             parts.append("WHERE " + " AND ".join(f"({c})" for c in self.conditions))

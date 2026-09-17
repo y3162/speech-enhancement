@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import BinaryIO
 
 
 def read_audio_stream_info(audio_path: Path) -> tuple[int, int, int]:
@@ -39,14 +40,14 @@ def read_wav_stream_info(audio_path: Path) -> tuple[int, int, int]:
     return sample_rate, data_size // block_align, channels
 
 
-def _advise_random(f) -> None:
+def _advise_random(f: BinaryIO) -> None:
     try:
         os.posix_fadvise(f.fileno(), 0, 0, os.POSIX_FADV_RANDOM)
     except OSError:
         pass
 
 
-def _read_wav_chunks(f, audio_path: Path) -> tuple[int, int, int, int, int]:
+def _read_wav_chunks(f: BinaryIO, audio_path: Path) -> tuple[int, int, int, int, int]:
     fmt = None
     data_size = None
     while True:

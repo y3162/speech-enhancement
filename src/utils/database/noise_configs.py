@@ -6,14 +6,13 @@ from ..noise.config import (
     NOISE_CONFIGS_TABLE,
     NoiseConfig,
 )
+from .common import open_metadata_db
+from .constants import SPEECH_UTILS_DB_METADATA_PATH
 from .corpora.dto import (
     NOISES_TABLE,
     Noise,
 )
-from .common import open_metadata_db
-from .constants import SPEECH_UTILS_DB_METADATA_PATH
 from .schema import Query
-
 
 SNR_MIN = -10
 SNR_MAX = 10
@@ -37,9 +36,7 @@ def config_seed(
     start_ratio: float,
     end_ratio: float,
 ) -> int:
-    payload = (
-        f"{audio_path.as_posix()}:{snr_db}:{start_ratio}:{end_ratio}".encode("utf-8")
-    )
+    payload = f"{audio_path.as_posix()}:{snr_db}:{start_ratio}:{end_ratio}".encode()
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
 
 
@@ -76,11 +73,7 @@ def build_noise_config_json(
 
 
 def build_noise_configs(noises: list[Noise]) -> list[NoiseConfig]:
-    selected = [
-        noise
-        for noise in noises
-        if noise.corpus == "DEMAND" and noise.audio_path.name == "ch01.wav"
-    ]
+    selected = [noise for noise in noises if noise.corpus == "DEMAND" and noise.audio_path.name == "ch01.wav"]
     if not selected:
         raise ValueError("no DEMAND ch01.wav rows in noises")
 

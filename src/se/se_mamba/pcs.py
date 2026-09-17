@@ -1,7 +1,6 @@
-import numpy as np
 import librosa
+import numpy as np
 import scipy
-
 
 PCS400 = np.ones(201)
 PCS400[0:3] = 1
@@ -45,5 +44,5 @@ def _to_wav(mag: np.ndarray, phase: np.ndarray, signal_length: int) -> np.ndarra
 
 def cal_pcs(signal_wav: np.ndarray) -> np.ndarray:
     mag, phase, signal_length = _magnitude_phase(signal_wav.squeeze())
-    enhanced = _to_wav(mag, phase, signal_length)
-    return enhanced / np.max(np.abs(enhanced))
+    pcs = _to_wav(mag, phase, signal_length)
+    return pcs / np.max(np.abs(pcs))

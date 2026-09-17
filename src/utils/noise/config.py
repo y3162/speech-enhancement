@@ -4,7 +4,6 @@ from typing import Any
 
 from ..database.schema import Column, Row, Table
 
-
 NOISE_CONFIGS_TABLE = Table(
     name="noise_configs",
     columns=(
