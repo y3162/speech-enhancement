@@ -1,0 +1,308 @@
+import os
+import random
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import Dataset
+
+from src.utils.audio.io import read_audio_segment
+from src.utils.database.connection import Connection
+from src.utils.database.constants import SPEECH_UTILS_DB_METADATA_PATH
+from src.utils.database.corpora.dto import UTTERANCES_TABLE, Utterance
+from src.utils.database.schema import Query
+from src.utils.noise.config import NOISE_CONFIGS_TABLE, NoiseConfig
+from src.utils.noise.generator import generate
+
+_CONNECTIONS: dict[tuple[int, str], Connection] = {}
+_LIBRISPEECH_CORPUS = "LibriSpeech"
+
+
+def worker_init_fn(_worker_id: int) -> None:
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
+    _CONNECTIONS.clear()
+
+
+def _connection(database_path: Path) -> Connection:
+    key = (os.getpid(), str(database_path))
+    connection = _CONNECTIONS.get(key)
+    if connection is None:
+        connection = Connection(database_path, read_only=True)
+        _CONNECTIONS[key] = connection
+    return connection
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _noise_split(subsets: list[str]) -> str:
+    kinds = set()
+    for name in subsets:
+        if name.startswith("train"):
+            kinds.add("train")
+        elif name.startswith("dev"):
+            kinds.add("dev")
+        elif name.startswith("test"):
+            kinds.add("test")
+        else:
+            raise ValueError(f"cannot map subset {name!r} to a noise split")
+    if len(kinds) != 1:
+        raise ValueError(
+            f"utterance subsets must map to one noise split, got {subsets} -> {kinds}"
+        )
+    return next(iter(kinds))
+
+
+def _fetch_utterances(
+    connection: Connection,
+    splits: list[str],
+) -> list[Utterance]:
+    if not splits:
+        raise ValueError("utterance splits must be a non-empty list")
+    rows = connection.fetch(
+        Query(UTTERANCES_TABLE)
+        .where("corpus = ?", _LIBRISPEECH_CORPUS)
+        .where_in("subset", splits)
+        .order_by("id"),
+        Utterance,
+    )
+    if not rows:
+        raise ValueError(
+            "no LibriSpeech utterances found for splits: " + ", ".join(splits)
+        )
+    return rows
+
+
+def _fetch_noise_configs(
+    connection: Connection,
+    noise_split: str,
+    noise_config_ids,
+) -> list[NoiseConfig]:
+    query = Query(NOISE_CONFIGS_TABLE).where("split = ?", noise_split)
+    ids = _as_list(noise_config_ids)
+    if ids:
+        query = query.where_in("id", ids)
+    rows = connection.fetch(query.order_by("id"), NoiseConfig)
+    if not rows:
+        raise ValueError(
+            f"no noise_configs found for split={noise_split!r} ids={ids or None}"
+        )
+    return rows
+
+
+def _fetch_split(
+    connection: Connection,
+    splits: list[str],
+    noise_config_ids,
+) -> tuple[list[Utterance], list[NoiseConfig]]:
+    return (
+        _fetch_utterances(connection, splits),
+        _fetch_noise_configs(connection, _noise_split(splits), noise_config_ids),
+    )
+
+
+def _sample_seed(seed: int, index: int) -> int:
+    return (int(seed) * 1_000_003 + int(index)) & 0xFFFFFFFFFFFFFFFF
+
+
+def _to_mono_waveform(audio: np.ndarray, path: Path) -> np.ndarray:
+    if audio.ndim != 2 or audio.shape[0] < 1 or audio.shape[1] < 1:
+        raise ValueError(f"{path} has invalid shape {audio.shape}")
+    if audio.shape[1] != 1:
+        raise ValueError(f"{path} must be mono, got channels={audio.shape[1]}")
+    return np.ascontiguousarray(audio[:, 0])
+
+
+def _normalize_pair(
+    clean: torch.Tensor,
+    noisy: torch.Tensor,
+    kind: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if kind == "energy":
+        scale = torch.sqrt(noisy.numel() / noisy.pow(2).sum().clamp_min(1e-12))
+        return clean * scale, noisy * scale
+    if kind == "peak":
+        scale = noisy.abs().amax() + 1e-9
+        return clean / scale, noisy / scale
+    raise ValueError(f"unsupported normalize {kind!r}; expected 'energy' or 'peak'")
+
+
+def _crop_or_pad(
+    clean: torch.Tensor,
+    noisy: torch.Tensor,
+    segment_size: int,
+    rng,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    length = clean.size(0)
+    if length == segment_size:
+        return clean, noisy
+    if length > segment_size:
+        start = rng.randint(0, length - segment_size)
+        end = start + segment_size
+        return clean[start:end], noisy[start:end]
+    pad = (0, segment_size - length)
+    return F.pad(clean, pad), F.pad(noisy, pad)
+
+
+def _apply_pcs(clean: torch.Tensor) -> torch.Tensor:
+    from src.se.se_mamba.pcs import cal_pcs
+
+    return torch.from_numpy(np.asarray(cal_pcs(clean.numpy()), dtype=np.float32))
+
+
+def pad_collate(
+    batch: list[tuple[torch.Tensor, torch.Tensor]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    cleans, noisys = zip(*batch)
+    lengths = torch.tensor([int(clean.size(0)) for clean in cleans], dtype=torch.long)
+    max_len = int(lengths.max().item())
+    clean_batch = cleans[0].new_zeros((len(batch), max_len))
+    noisy_batch = noisys[0].new_zeros((len(batch), max_len))
+    for i, (clean, noisy) in enumerate(zip(cleans, noisys)):
+        clean_batch[i, : clean.size(0)] = clean
+        noisy_batch[i, : noisy.size(0)] = noisy
+    return clean_batch, noisy_batch, lengths
+
+
+class AdditiveNoiseDataset(Dataset):
+    def __init__(
+        self,
+        utterances: list[Utterance],
+        noise_configs: list[NoiseConfig],
+        database_path: Path,
+        sampling_rate: int,
+        segment_size: int,
+        normalize: str,
+        crop: bool,
+        max_frames: int | None = None,
+        seed: int | None = None,
+        use_pcs400: bool = False,
+    ) -> None:
+        if not utterances:
+            raise ValueError("utterances must be non-empty")
+        if not noise_configs:
+            raise ValueError("noise_configs must be non-empty")
+        if normalize not in ("energy", "peak"):
+            raise ValueError(
+                f"unsupported normalize {normalize!r}; expected 'energy' or 'peak'"
+            )
+        self.utterances = utterances
+        self.noise_configs = noise_configs
+        self.database_path = Path(database_path)
+        self.sampling_rate = sampling_rate
+        self.segment_size = segment_size
+        self.normalize = normalize
+        self.crop = crop
+        self.max_frames = max_frames
+        self.seed = seed
+        self.use_pcs400 = use_pcs400
+
+    def __len__(self) -> int:
+        return len(self.utterances)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        utterance = self.utterances[index]
+        if utterance.sample_rate != self.sampling_rate:
+            raise ValueError(
+                f"{utterance.audio_path} sample_rate {utterance.sample_rate} "
+                f"does not match {self.sampling_rate}"
+            )
+        if utterance.frames is None or utterance.frames < 1:
+            raise ValueError(f"{utterance.audio_path} has invalid frames")
+
+        num_frames = utterance.frames
+        if self.max_frames is not None:
+            num_frames = min(num_frames, self.max_frames)
+
+        rng = (
+            random
+            if self.seed is None
+            else random.Random(_sample_seed(self.seed, index))
+        )
+        noise_config = rng.choice(self.noise_configs)
+
+        clean_2d = read_audio_segment(utterance.audio_path, 0, num_frames)
+        noise_2d = generate(
+            clean_2d,
+            utterance.sample_rate,
+            noise_config,
+            _connection(self.database_path),
+        )
+        clean = torch.from_numpy(_to_mono_waveform(clean_2d, utterance.audio_path))
+        noisy = torch.from_numpy(
+            _to_mono_waveform(clean_2d + noise_2d, utterance.audio_path)
+        )
+        clean, noisy = _normalize_pair(clean, noisy, self.normalize)
+        if self.crop:
+            clean, noisy = _crop_or_pad(clean, noisy, self.segment_size, rng)
+        if self.use_pcs400:
+            clean = _apply_pcs(clean)
+        return clean, noisy
+
+
+def _metadata_path(config: SimpleNamespace) -> Path:
+    sql_root = getattr(config.data.librispeech, "sql_root", None)
+    if sql_root:
+        return Path(sql_root)
+    return SPEECH_UTILS_DB_METADATA_PATH
+
+
+def build_datasets(config: SimpleNamespace) -> tuple[AdditiveNoiseDataset, AdditiveNoiseDataset]:
+    data = config.data
+    if data.dataset != "librispeech":
+        raise ValueError(
+            f"unsupported dataset {data.dataset!r}; only 'librispeech' is supported"
+        )
+    ls = data.librispeech
+    train_splits = _as_list(ls.train_splits)
+    valid_splits = _as_list(ls.validation_splits)
+    if not train_splits:
+        raise ValueError("data.librispeech.train_splits is required")
+    if not valid_splits:
+        raise ValueError("data.librispeech.validation_splits is required")
+
+    database_path = _metadata_path(config)
+    with Connection(database_path, read_only=True) as connection:
+        train_utterances, train_noises = _fetch_split(
+            connection, train_splits, ls.noise_config_ids
+        )
+        valid_utterances, valid_noises = _fetch_split(
+            connection, valid_splits, ls.noise_config_ids
+        )
+
+    frame_counts = [int(utt.frames) for utt in train_utterances if utt.frames]
+    if not frame_counts:
+        raise ValueError("train utterances are missing frames")
+    max_frames = max(frame_counts)
+    use_pcs400 = bool(getattr(config.train, "use_pcs400", False))
+    trainset = AdditiveNoiseDataset(
+        utterances=train_utterances,
+        noise_configs=train_noises,
+        database_path=database_path,
+        sampling_rate=data.sampling_rate,
+        segment_size=data.segment_size,
+        normalize=data.normalize,
+        crop=True,
+        use_pcs400=use_pcs400,
+    )
+    validset = AdditiveNoiseDataset(
+        utterances=valid_utterances,
+        noise_configs=valid_noises,
+        database_path=database_path,
+        sampling_rate=data.sampling_rate,
+        segment_size=data.segment_size,
+        normalize=data.normalize,
+        crop=False,
+        max_frames=max_frames,
+        seed=config.train.env.seed,
+    )
+    return trainset, validset

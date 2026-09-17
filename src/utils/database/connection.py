@@ -8,8 +8,8 @@ from .schema import Query, Row, Table
 
 
 class Connection:
-    def __init__(self, database_path: Path) -> None:
-        self._conn = duckdb.connect(database_path)
+    def __init__(self, database_path: Path, read_only: bool = False) -> None:
+        self._conn = duckdb.connect(database_path, read_only=read_only)
         self._pending: dict[str, tuple[Table, list[Row]]] = {}
 
     def insert(self, table: Table, rows: Row | list[Row]) -> None:

@@ -1,0 +1,16 @@
+---
+description: src/se の契約。キー名・損失名を変えると resume と TensorBoard が壊れる
+globs: src/se/**/*.py
+alwaysApply: false
+---
+
+# src/se で変えてはいけないもの
+
+- 学習入口は 3 つの `train.py`（`mp_senet` / `se_mamba` / `se_mamba_pp`）。フラグは `--config` / `--resume` / `--checkpoint_root`。
+- チェックポイントは `g_latest` / `do_latest` / `g_best`。generator の **子モジュール名** がキーになる。`TSMamba`、`forward_blocks.0`、`downsamples[0] = Identity()`（最初の畳み込みは `downsamples.1`）をリネーム・詰め替えしない。
+- 損失の JSON キーは `weighted_total` の属性名と一致させる。SEMamba / SEMamba++ は意図的に `consistancy`（スペルそのまま）。MP-SENet だけ一貫性項を `stft` に載せ替える。
+- MP-SENet の Dense / `SPConvTranspose2d` は mag_phase 版と padding・kernel が違う。共通化しない。
+- SEMamba は `mask * noisy_mag`、SEMamba++ は mask のみ。位相損失も `phase_loss_difference` と `phase_loss_gradient_matrix` で別。
+- `enhance` は内側モデルの `processor` を読む。`SEModel` と `model` の両方に同じ processor を載せる。
+- DDP は `GpuParallel.wrap` が generator と discriminator を別々に巻き、`loss.set_discriminator` する。テストから `GpuParallel.start()` を呼ばない（プロセスグループ副作用）。
+- `FrequencyGLP` の周波数幅 `(100, 50, 25)` は `n_fft=400` の畳み込み出力に固定されている。

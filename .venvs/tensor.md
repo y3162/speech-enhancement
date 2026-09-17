@@ -55,3 +55,11 @@ uv pip install --no-deps \
     "https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4%2Bcu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
 cp .venvs/sitecustomize.py .venvs/tensor/lib/python3.10/site-packages/sitecustomize.py
 ```
+
+## nnAudio インストール
+
+SEMamba++ の判別器（`src/se/se_mamba_pp/discriminator.py` の `DiscriminatorCQT`）が CQT 変換に使う。
+
+```bash
+uv pip install nnAudio==0.3.4
+```

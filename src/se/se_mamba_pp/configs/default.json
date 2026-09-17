@@ -1,0 +1,62 @@
+{
+    "name": "se_mamba_pp",
+    "checkpoint_root": "data/checkpoints/se_mamba_pp",
+    "data": {
+        "dataset": "librispeech",
+        "sampling_rate": 16000,
+        "segment_size": 48000,
+        "normalize": "peak",
+        "stft": {
+            "n_fft": 400,
+            "hop_size": 100,
+            "win_size": 400,
+            "compress_factor": 0.3
+        },
+        "librispeech": {
+            "sql_root": null,
+            "train_splits": ["train-clean-100", "train-clean-360"],
+            "validation_splits": ["dev-clean"],
+            "noise_config_ids": null
+        }
+    },
+    "model": {
+        "hid_feature": 48,
+        "unet_expansion": 1,
+        "num_tfmamba": 4,
+        "d_state": 16,
+        "d_conv": 4,
+        "expand": 2,
+        "norm_epsilon": 1e-05,
+        "beta": 2.0,
+        "input_channel": 2,
+        "output_channel": 1
+    },
+    "train": {
+        "env": {
+            "batch_size": 8,
+            "seed": 42,
+            "num_workers": 8,
+            "prefetch_factor": 2,
+            "epochs": 100,
+            "summary_interval": 100,
+            "max_steps": null,
+            "val_batch_size": 2,
+            "pesq_num_workers": 4
+        },
+        "optim": {
+            "learning_rate": 0.0002,
+            "adam_b1": 0.8,
+            "adam_b2": 0.99,
+            "lr_decay": 0.99
+        },
+        "loss": {
+            "adv_g": 1.0,
+            "fm_g": 1.0,
+            "magnitude": 0.9,
+            "phase": 0.3,
+            "complex": 0.1,
+            "mel": 0.1,
+            "consistancy": 0.1
+        }
+    }
+}

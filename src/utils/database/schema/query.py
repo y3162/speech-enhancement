@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Sequence
 
 from .column import Column
 from .table import Table
@@ -10,6 +10,7 @@ class Query:
     table: Table
     conditions: tuple[str, ...] = ()
     parameters: tuple[Any, ...] = ()
+    order_clauses: tuple[str, ...] = ()
     row_limit: int | None = None
 
     def where(self, sql: str, *params: Any) -> "Query":
@@ -23,6 +24,17 @@ class Query:
             conditions=self.conditions + (sql,),
             parameters=self.parameters + params,
         )
+
+    def where_in(self, column: str, values: Sequence[Any]) -> "Query":
+        if not values:
+            raise ValueError(f"{column} IN () is empty")
+        placeholders = ", ".join("?" for _ in values)
+        return self.where(f"{column} IN ({placeholders})", *values)
+
+    def order_by(self, *columns: str) -> "Query":
+        if not columns:
+            raise ValueError("order_by requires at least one column")
+        return replace(self, order_clauses=self.order_clauses + columns)
 
     def limit(self, n: int) -> "Query":
         return replace(self, row_limit=n)
@@ -38,6 +50,8 @@ class Query:
         parts = [f"SELECT {columns} FROM {self.table.name}"]
         if self.conditions:
             parts.append("WHERE " + " AND ".join(f"({c})" for c in self.conditions))
+        if self.order_clauses:
+            parts.append("ORDER BY " + ", ".join(self.order_clauses))
         if self.row_limit is not None:
             parts.append(f"LIMIT {self.row_limit}")
         return " ".join(parts), self.parameters
