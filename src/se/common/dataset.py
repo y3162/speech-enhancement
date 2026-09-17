@@ -9,13 +9,10 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from src.utils.audio.io import read_audio_segment
-from src.utils.database.connection import Connection
-from src.utils.database.constants import SPEECH_UTILS_DB_METADATA_PATH
-from src.utils.database.corpora.dto import UTTERANCES_TABLE, Utterance
-from src.utils.database.schema import Query
-from src.utils.noise.config import NOISE_CONFIGS_TABLE, NoiseConfig
-from src.utils.noise.generator import generate
+from src.data.audio import read_audio_segment
+from src.data.db import Connection, fetch_noise_configs, fetch_utterances, metadata_path
+from src.data.noise import generate
+from src.data.schema import NoiseConfig, Utterance
 
 _CONNECTIONS: dict[tuple[int, str], Connection] = {}
 _LIBRISPEECH_CORPUS = "LibriSpeech"
@@ -53,30 +50,24 @@ def _noise_split(subsets: list[str]) -> str:
     return next(iter(kinds))
 
 
-def _fetch_utterances(
+def _load_utterances(
     connection: Connection,
     splits: list[str],
 ) -> list[Utterance]:
     if not splits:
         raise ValueError("utterance splits must be a non-empty list")
-    rows = connection.fetch(
-        Query(UTTERANCES_TABLE).where("corpus = ?", _LIBRISPEECH_CORPUS).where_in("subset", splits).order_by("id"),
-        Utterance,
-    )
+    rows = fetch_utterances(connection, _LIBRISPEECH_CORPUS, splits)
     if not rows:
         raise ValueError("no LibriSpeech utterances found for splits: " + ", ".join(splits))
     return rows
 
 
-def _fetch_noise_configs(
+def _load_noise_configs(
     connection: Connection,
     noise_split: str,
     noise_config_ids: list[int] | None,
 ) -> list[NoiseConfig]:
-    query = Query(NOISE_CONFIGS_TABLE).where("split = ?", noise_split)
-    if noise_config_ids:
-        query = query.where_in("id", list(noise_config_ids))
-    rows = connection.fetch(query.order_by("id"), NoiseConfig)
+    rows = fetch_noise_configs(connection, noise_split, noise_config_ids)
     if not rows:
         raise ValueError(f"no noise_configs found for split={noise_split!r} ids={noise_config_ids}")
     return rows
@@ -88,8 +79,8 @@ def _fetch_split(
     noise_config_ids: list[int] | None,
 ) -> tuple[list[Utterance], list[NoiseConfig]]:
     return (
-        _fetch_utterances(connection, splits),
-        _fetch_noise_configs(connection, _noise_split(splits), noise_config_ids),
+        _load_utterances(connection, splits),
+        _load_noise_configs(connection, _noise_split(splits), noise_config_ids),
     )
 
 
@@ -137,7 +128,7 @@ def _crop_or_pad(
 
 
 def _apply_pcs(clean: torch.Tensor) -> torch.Tensor:
-    from src.se.se_mamba.pcs import cal_pcs
+    from src.se.common.pcs import cal_pcs
 
     return torch.from_numpy(np.asarray(cal_pcs(clean.numpy()), dtype=np.float32))
 
@@ -231,7 +222,7 @@ def build_datasets(cfg: SimpleNamespace) -> tuple[AdditiveNoiseDataset, Additive
     if not data.validation_splits:
         raise ValueError("data.validation_splits is required")
 
-    database_path = SPEECH_UTILS_DB_METADATA_PATH
+    database_path = metadata_path()
     with Connection(database_path, read_only=True) as connection:
         train_utterances, train_noises = _fetch_split(connection, data.train_splits, data.noise_config_ids)
         valid_utterances, valid_noises = _fetch_split(connection, data.validation_splits, data.noise_config_ids)

@@ -2,17 +2,8 @@ import argparse
 import hashlib
 from pathlib import Path
 
-from ..noise.config import (
-    NOISE_CONFIGS_TABLE,
-    NoiseConfig,
-)
-from .common import open_metadata_db
-from .constants import SPEECH_UTILS_DB_METADATA_PATH
-from .corpora.dto import (
-    NOISES_TABLE,
-    Noise,
-)
-from .schema import Query
+from .db import ensure_table, fetch_noises, metadata_path
+from .schema import NOISE_CONFIGS_TABLE, Noise, NoiseConfig
 
 SNR_MIN = -10
 SNR_MAX = 10
@@ -76,6 +67,7 @@ def build_noise_configs(noises: list[Noise]) -> list[NoiseConfig]:
     selected = [noise for noise in noises if noise.corpus == "DEMAND" and noise.audio_path.name == "ch01.wav"]
     if not selected:
         raise ValueError("no DEMAND ch01.wav rows in noises")
+    selected = sorted(selected, key=lambda noise: noise.audio_path.as_posix())
 
     configs: list[NoiseConfig] = []
     for noise in selected:
@@ -100,15 +92,11 @@ def build_noise_configs(noises: list[Noise]) -> list[NoiseConfig]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--replace", action="store_true")
     args = parser.parse_args()
 
-    with open_metadata_db(
-        SPEECH_UTILS_DB_METADATA_PATH,
-        NOISE_CONFIGS_TABLE,
-        force=args.force,
-    ) as con:
-        noises = con.fetch(Query(NOISES_TABLE), Noise)
+    with ensure_table(metadata_path(), NOISE_CONFIGS_TABLE, replace=args.replace) as con:
+        noises = fetch_noises(con)
         if not noises:
             raise ValueError("noises table is empty")
         con.insert(NOISE_CONFIGS_TABLE, build_noise_configs(noises))

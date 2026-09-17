@@ -15,7 +15,7 @@
 
 ## 開発ツール（Ruff / Pyright）
 
-`src/`（`src/se`・`src/asr`・`src/utils`）の formatter / linter / 型チェック。学習の実行には不要。設定はリポジトリルートの `pyproject.toml`。
+`src/`（`src/se`・`src/asr`・`src/data`）の formatter / linter / 型チェック。学習の実行には不要。設定はリポジトリルートの `pyproject.toml`。
 
 ```bash
 source .venvs/<host>/bin/activate

@@ -2,15 +2,15 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..constants import SPEECH_UTILS_CORPORA_DEMAND_DIR
-from .audio import read_audio_stream_info
-from .dto import Noise
+from ..audio import read_audio_stream_info
+from ..db import demand_dir
+from ..schema import Noise
 from .scan import iter_in_threads
 
 
 def noise_iterator() -> Iterator[Noise]:
     return iter_in_threads(
-        iter_environment_dirs(SPEECH_UTILS_CORPORA_DEMAND_DIR),
+        iter_environment_dirs(demand_dir()),
         parse_environment_dir,
     )
 

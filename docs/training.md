@@ -8,9 +8,9 @@
 ```bash
 source .venvs/<host>/bin/activate
 export PYTHONPATH="$(pwd)"
-export SPEECH_UTILS_DB_ROOT_DIR=...      # metadata.duckdb のあるディレクトリ（.env.example 参照）
-export SPEECH_UTILS_CORPORA_ROOT_DIR=... # LibriSpeech などのコーパスルート。DB の audio_path は
-                                         # リポジトリルートからの相対パスなので、ルートで実行する
+export SPEECH_DB_ROOT_DIR=...      # metadata.duckdb のあるディレクトリ（.env.example 参照）
+export SPEECH_CORPORA_ROOT_DIR=... # LibriSpeech などのコーパスルート。DB の audio_path は
+                                   # リポジトリルートからの相対パスなので、ルートで実行する
 
 # 必要なら（旧コードが設定していた値）
 export NCCL_IB_DISABLE=1

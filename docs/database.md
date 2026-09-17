@@ -5,7 +5,7 @@
 
 全コーパスを `./corpora` にシンボリックリンクする。
 
-[constants.py](../src/utils/database/constants.py)にあるように、全コーパスは同一親ディレクトリに配置されていることを仮定している。
+[`src/data/db.py`](../src/data/db.py) にあるように、全コーパスは同一親ディレクトリに配置されていることを仮定している。
 
 ```bash
 mkdir -p ./corpora
@@ -27,16 +27,18 @@ mkdir -p ./data/db
 ## 環境変数の設定
 
 ```bash
-export SPEECH_UTILS_CORPORA_ROOT_DIR=./corpora
-export SPEECH_UTILS_DB_ROOT_DIR=./data/db
+export SPEECH_CORPORA_ROOT_DIR=./corpora
+export SPEECH_DB_ROOT_DIR=./data/db
 ```
 
 ## メタデータのインポート
 
+同じ DuckDB ファイルへ続けて投入できる。テーブルを作り直すときは `--replace` を付ける。
+
 ```bash
-python -m src.utils.database.utterances --corpus librispeech --force
-python -m src.utils.database.utterances --corpus libritts --force
-python -m src.utils.database.utterances --corpus vctk --force
-python -m src.utils.database.noises --corpus demand --force
-python -m src.utils.database.noise_configs --force
+python -m src.data.utterances --corpus librispeech
+python -m src.data.utterances --corpus libritts
+python -m src.data.utterances --corpus vctk
+python -m src.data.noises --corpus demand
+python -m src.data.noise_configs
 ```

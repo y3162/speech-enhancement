@@ -4,10 +4,9 @@ from typing import Any
 
 import numpy as np
 
-from ...audio.io import read_audio_segment
-from ...database.connection import Connection
-from ...database.corpora.dto import NOISES_TABLE, Noise
-from ...database.schema import Query
+from .audio import read_audio_segment
+from .db import Connection, fetch_noise_by_id
+from .schema import NoiseConfig
 
 
 @dataclass(frozen=True)
@@ -24,12 +23,27 @@ class Pipeline:
     steps: tuple[AdditiveStep, ...]
 
 
-def parse(data: dict[str, Any]) -> Pipeline:
+def generate(
+    clean: np.ndarray,
+    sample_rate: int,
+    config: NoiseConfig,
+    connection: Connection,
+) -> np.ndarray:
+    if clean.ndim != 2 or clean.shape[0] < 1 or clean.shape[1] < 1:
+        raise ValueError(f"clean must be a non-empty 2D array (frames, channels), got shape {clean.shape}")
+
+    version = config.json["version"]
+    if version != "1.0":
+        raise ValueError(f"Unsupported noise config version: {version!r}")
+    return _generate_pipeline(clean, sample_rate, _parse(config.json), connection)
+
+
+def _parse(data: dict[str, Any]) -> Pipeline:
     steps = tuple(_parse_step(step) for step in data["pipeline"])
     return Pipeline(steps=steps)
 
 
-def generate(
+def _generate_pipeline(
     clean: np.ndarray,
     sample_rate: int,
     pipeline: Pipeline,
@@ -104,7 +118,7 @@ def _generate_additive(
     step: AdditiveStep,
     connection: Connection,
 ) -> np.ndarray:
-    noise_row = _fetch_noise(connection, step.noise_id)
+    noise_row = fetch_noise_by_id(connection, step.noise_id)
     if noise_row.sample_rate != sample_rate:
         raise ValueError(f"Noise id {step.noise_id} sample_rate {noise_row.sample_rate} does not match {sample_rate}")
     if noise_row.frames is None or noise_row.frames < 1:
@@ -130,16 +144,6 @@ def _generate_additive(
             f"Noise id {step.noise_id} channels {noise.shape[1]} do not match clean channels {clean.shape[1]}"
         )
     return _scale_to_snr(clean, noise, step.snr_db)
-
-
-def _fetch_noise(connection: Connection, noise_id: int) -> Noise:
-    rows = connection.fetch(
-        Query(NOISES_TABLE).where("id = ?", noise_id).limit(1),
-        Noise,
-    )
-    if not rows:
-        raise ValueError(f"Noise id {noise_id} not found")
-    return rows[0]
 
 
 def _scale_to_snr(

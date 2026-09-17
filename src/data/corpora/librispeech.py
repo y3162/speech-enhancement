@@ -1,16 +1,16 @@
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..constants import SPEECH_UTILS_CORPORA_LIBRISPEECH_DIR
-from .audio import read_audio_stream_info
-from .dto import Utterance
+from ..audio import read_audio_stream_info
+from ..db import librispeech_dir
+from ..schema import Utterance
 from .scan import iter_in_threads, iter_speaker_chapter_transcripts
 
 
 def utterance_iterator() -> Iterator[Utterance]:
     return iter_in_threads(
         iter_speaker_chapter_transcripts(
-            SPEECH_UTILS_CORPORA_LIBRISPEECH_DIR,
+            librispeech_dir(),
             "{speaker}-{chapter}.trans.txt",
         ),
         parse_transcript_file,

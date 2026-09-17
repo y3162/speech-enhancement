@@ -8,7 +8,7 @@ alwaysApply: false
 
 - 学習入口は 3 つの `train.py`（`mp_senet` / `se_mamba` / `se_mamba_pp`）。各ファイルに G forward → D 更新 → G 更新 → 検証 → 保存のループを直接書く。共通ループ・基底クラス・Factory は作らない。
 - 実行は常に `torchrun --nproc_per_node=N -m src.se.<model>.train --run_dir DIR [--config JSON]`（N=1 でも）。`init_process_group` と DDP は常時。`run_dir/config.json` があれば再開扱いで `--config` はエラー。
-- 2 モデル以上で使う部品は `src/se/common/`（`stft.py` / `phase_loss.py` / `activations.py` / `pesq.py` / `metric_discriminator.py` / `dense.py` / `mamba.py` / `dataset.py` / `training.py`）。1 モデルだけのものはそのディレクトリに置く。`training.py` は制御フローを持たない葉関数のみ。
+- 2 モデル以上で使う部品は `src/se/common/`（`stft.py` / `phase_loss.py` / `activations.py` / `pesq.py` / `metric_discriminator.py` / `dense.py` / `mamba.py` / `dataset.py` / `pcs.py` / `training.py`）。1 モデルだけのものはそのディレクトリに置く。`training.py` は制御フローを持たない葉関数のみ。
 - 各 `loss.py` は tensor だけを受け取る純関数。判別器の forward は `train.py` に書く。重み付き和は明示的に書き、config に無いキーは `AttributeError` で落とす（黙って無視しない）。
 - チェックポイントは `latest.pt`（generator / discriminator / optim_g / optim_d / sched_g / sched_d / epoch / steps / best_pesq）と `best.pt`（generator）。scheduler は `state_dict` で再開する（`last_epoch` を渡さない）。`sched.step()` の後に保存する。
 - STFT は `mag_pha_stft(wave, cfg.data.stft, eps=None)`。入力は abs/angle、生成音声の再解析だけ `eps=1e-10`（ゼロ bin での NaN 勾配回避）。

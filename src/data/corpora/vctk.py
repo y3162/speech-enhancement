@@ -2,15 +2,15 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..constants import SPEECH_UTILS_CORPORA_VCTK_DIR
-from .audio import read_audio_stream_info
-from .dto import Utterance
+from ..audio import read_audio_stream_info
+from ..db import vctk_dir
+from ..schema import Utterance
 from .scan import iter_in_threads
 
 
 def utterance_iterator() -> Iterator[Utterance]:
     return iter_in_threads(
-        iter_speaker_dirs(SPEECH_UTILS_CORPORA_VCTK_DIR),
+        iter_speaker_dirs(vctk_dir()),
         parse_speaker_dir,
     )
 

@@ -5,8 +5,8 @@ alwaysApply: true
 
 # このリポジトリの前提
 
-- import はリポジトリルートを `PYTHONPATH` にした `from src.se...` / `from src.utils...`。パッケージ名 `se` 単体ではない。
-- `src.se.common.dataset` を import すると、中身を使わなくても `SPEECH_UTILS_DB_ROOT_DIR` と `SPEECH_UTILS_CORPORA_ROOT_DIR` が必要。未設定だと `Path(None)` で `TypeError` になる（`corpora/__init__.py` → `constants.py`）。
+- import はリポジトリルートを `PYTHONPATH` にした `from src.se...` / `from src.asr...` / `from src.data...`。パッケージ名 `se` 単体ではない。
+- `src.se.common.stft` や `src.se.common.training` の import に環境変数は不要。`src.se.common.dataset` の import も不要。`build_datasets` や DB CLI の実行時に `SPEECH_DB_ROOT_DIR` と `SPEECH_CORPORA_ROOT_DIR` が無いと `RuntimeError` になる。
 - 仮想環境はマシン別（`.venvs/turing` / `tensor` / `shannon`）。コードやテストにホストパスや特定 venv を書かない。Python は PATH 上のものを使う。
 - 生データは git 外（`/corpora/`、`/data/`）。テストやルールに wav・DuckDB・絶対パスを置かない。
 - テストの入口は `tests/run.sh` のみ。検証用の一時スクリプトをリポジトリに残さない。

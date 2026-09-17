@@ -15,8 +15,6 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from src.se.common.dataset import pad_collate, worker_init_fn
-
 
 def to_namespace(value: Any) -> Any:
     if isinstance(value, dict):
@@ -90,6 +88,8 @@ def build_loaders(
     validset: Dataset,
     train: SimpleNamespace,
 ) -> tuple[DataLoader, DataLoader]:
+    from src.se.common.dataset import pad_collate, worker_init_fn
+
     train_kwargs: dict[str, Any] = {}
     if train.num_workers > 0:
         train_kwargs["persistent_workers"] = True
