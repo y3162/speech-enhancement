@@ -1,16 +1,20 @@
 ---
-description: src/se の契約。キー名・損失名を変えると resume と TensorBoard が壊れる
+description: src/se の契約。損失キー・チェックポイントのキーを変えると resume と TensorBoard が壊れる
 globs: src/se/**/*.py
 alwaysApply: false
 ---
 
-# src/se で変えてはいけないもの
+# src/se の構成と契約
 
-- 学習入口は 3 つの `train.py`（`mp_senet` / `se_mamba` / `se_mamba_pp`）。フラグは `--config` / `--resume` / `--checkpoint_root`。
-- チェックポイントは `g_latest` / `do_latest` / `g_best`。generator の **子モジュール名** がキーになる。`TSMamba`、`forward_blocks.0`、`downsamples[0] = Identity()`（最初の畳み込みは `downsamples.1`）をリネーム・詰め替えしない。
-- 損失の JSON キーは `weighted_total` の属性名と一致させる。SEMamba / SEMamba++ は意図的に `consistancy`（スペルそのまま）。MP-SENet だけ一貫性項を `stft` に載せ替える。
-- MP-SENet の Dense / `SPConvTranspose2d` は mag_phase 版と padding・kernel が違う。共通化しない。
-- SEMamba は `mask * noisy_mag`、SEMamba++ は mask のみ。位相損失も `phase_loss_difference` と `phase_loss_gradient_matrix` で別。
-- `enhance` は内側モデルの `processor` を読む。`SEModel` と `model` の両方に同じ processor を載せる。
-- DDP は `GpuParallel.wrap` が generator と discriminator を別々に巻き、`loss.set_discriminator` する。テストから `GpuParallel.start()` を呼ばない（プロセスグループ副作用）。
-- `FrequencyGLP` の周波数幅 `(100, 50, 25)` は `n_fft=400` の畳み込み出力に固定されている。
+- 学習入口は 3 つの `train.py`（`mp_senet` / `se_mamba` / `se_mamba_pp`）。各ファイルに G forward → D 更新 → G 更新 → 検証 → 保存のループを直接書く。共通ループ・基底クラス・Factory は作らない。
+- 実行は常に `torchrun --nproc_per_node=N -m src.se.<model>.train --run_dir DIR [--config JSON]`（N=1 でも）。`init_process_group` と DDP は常時。`run_dir/config.json` があれば再開扱いで `--config` はエラー。
+- 2 モデル以上で使う部品は `src/se/common/`（`stft.py` / `phase_loss.py` / `activations.py` / `pesq.py` / `metric_discriminator.py` / `dense.py` / `mamba.py` / `dataset.py` / `training.py`）。1 モデルだけのものはそのディレクトリに置く。`training.py` は制御フローを持たない葉関数のみ。
+- 各 `loss.py` は tensor だけを受け取る純関数。判別器の forward は `train.py` に書く。重み付き和は明示的に書き、config に無いキーは `AttributeError` で落とす（黙って無視しない）。
+- チェックポイントは `latest.pt`（generator / discriminator / optim_g / optim_d / sched_g / sched_d / epoch / steps / best_pesq）と `best.pt`（generator）。scheduler は `state_dict` で再開する（`last_epoch` を渡さない）。`sched.step()` の後に保存する。
+- STFT は `mag_pha_stft(wave, cfg.data.stft, eps=None)`。入力は abs/angle、生成音声の再解析だけ `eps=1e-10`（ゼロ bin での NaN 勾配回避）。
+- generator の `forward(mag, pha)` は `Spec(mag, pha, com)`。SEMamba は `mask * noisy_mag`、SEMamba++ は mask のみ。位相損失は MP-SENet が `phase_loss_difference`、SEMamba / SEMamba++ が `phase_loss_gradient_matrix`。
+- MetricGAN（MP-SENet / SEMamba）: MP-SENet は再解析振幅 `gen_hat.mag` を D に入れ、SEMamba は `gen.mag` を入れる。PESQ が 1 件でも失敗したバッチは fake 項 0 で D を更新する（原実装どおり）。`MetricDiscriminator` は Dropout を持つので検証では D も `eval()`。
+- MP-SENet の Dense / `SPConvTranspose2d` は `common/dense.py` 版と padding・kernel が違う。共通化しない。
+- `FrequencyGLP` の周波数幅 `(100, 50, 25)` は `n_fft=400` 固定。`DiscriminatorCQT` の `fs = 16000` は config と独立。
+- `data.pcs400` は SEMamba の学習用 clean にだけ適用（検証には適用しない）。`cal_pcs` は末尾で peak 正規化する。
+- config の `train.batch_size` は GPU あたり。`data.normalize` は energy（MP-SENet / SEMamba）と peak（SEMamba++）。

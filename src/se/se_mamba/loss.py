@@ -1,27 +1,36 @@
-from functools import partial
-from types import SimpleNamespace
+import torch
+import torch.nn.functional as F
 
-from src.se.mag_phase.loss import MagPhaseMetricGANLoss, attach_total, mag_phase_terms
-from src.se.mag_phase.phase_loss import phase_loss_gradient_matrix
+from src.se.common.phase_loss import phase_loss_gradient_matrix
+from src.se.common.stft import Spec
 
 
-class SEMambaLoss(MagPhaseMetricGANLoss):
-    def __init__(self, weights, n_fft: int) -> None:
-        super().__init__(weights, generated_from="mag")
-        self.phase_fn = partial(phase_loss_gradient_matrix, n_fft=n_fft)
-
-    def generator_loss(
-        self,
-        pred: SimpleNamespace,
-        target: SimpleNamespace,
-    ) -> SimpleNamespace:
-        spectral = mag_phase_terms(pred, target, self.phase_fn)
-        terms = SimpleNamespace(
-            magnitude=spectral.magnitude,
-            phase=spectral.phase,
-            complex=spectral.complex,
-            consistancy=spectral.consistancy,
-            time=spectral.time,
-            metric=self.generator_metric(pred, target),
-        )
-        return attach_total(terms, self.weights)
+def generator_loss(
+    clean: Spec,
+    clean_audio: torch.Tensor,
+    gen: Spec,
+    gen_audio: torch.Tensor,
+    gen_hat: Spec,
+    metric_g: torch.Tensor,
+    w,
+    n_fft: int,
+) -> dict[str, torch.Tensor]:
+    """SEMamba generator loss. Differs from MP-SENet by using the gradient-matrix phase loss."""
+    ip_loss, gd_loss, iaf_loss = phase_loss_gradient_matrix(clean.pha, gen.pha, n_fft)
+    losses = {
+        "magnitude": F.mse_loss(clean.mag, gen.mag),
+        "phase": ip_loss + gd_loss + iaf_loss,
+        "complex": F.mse_loss(clean.com, gen.com) * 2,
+        "consistency": F.mse_loss(gen.com, gen_hat.com) * 2,
+        "time": F.l1_loss(clean_audio, gen_audio),
+        "metric": F.mse_loss(metric_g.flatten(), torch.ones_like(metric_g.flatten())),
+    }
+    losses["total"] = (
+        w.magnitude * losses["magnitude"]
+        + w.phase * losses["phase"]
+        + w.complex * losses["complex"]
+        + w.consistency * losses["consistency"]
+        + w.time * losses["time"]
+        + w.metric * losses["metric"]
+    )
+    return losses

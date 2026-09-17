@@ -11,21 +11,17 @@
         },
         "train_splits": ["train-clean-100", "train-clean-360"],
         "validation_splits": ["dev-clean"],
-        "noise_config_ids": null,
-        "pcs400": false
+        "noise_config_ids": null
     },
     "model": {
-        "hid_feature": 64,
-        "num_tfmamba": 4,
-        "d_state": 16,
-        "d_conv": 4,
-        "expand": 4,
-        "norm_epsilon": 1e-05,
-        "beta": 2.0
+        "dense_channel": 64,
+        "beta": 2.0,
+        "num_tsblocks": 4,
+        "n_heads": 4
     },
     "train": {
-        "batch_size": 4,
-        "epochs": 200,
+        "batch_size": 16,
+        "epochs": 400,
         "seed": 42,
         "num_workers": 4,
         "prefetch_factor": 2,

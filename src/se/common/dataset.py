@@ -36,14 +36,6 @@ def _connection(database_path: Path) -> Connection:
     return connection
 
 
-def _as_list(value) -> list:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return [value]
-
-
 def _noise_split(subsets: list[str]) -> str:
     kinds = set()
     for name in subsets:
@@ -85,16 +77,15 @@ def _fetch_utterances(
 def _fetch_noise_configs(
     connection: Connection,
     noise_split: str,
-    noise_config_ids,
+    noise_config_ids: list[int] | None,
 ) -> list[NoiseConfig]:
     query = Query(NOISE_CONFIGS_TABLE).where("split = ?", noise_split)
-    ids = _as_list(noise_config_ids)
-    if ids:
-        query = query.where_in("id", ids)
+    if noise_config_ids:
+        query = query.where_in("id", list(noise_config_ids))
     rows = connection.fetch(query.order_by("id"), NoiseConfig)
     if not rows:
         raise ValueError(
-            f"no noise_configs found for split={noise_split!r} ids={ids or None}"
+            f"no noise_configs found for split={noise_split!r} ids={noise_config_ids}"
         )
     return rows
 
@@ -102,7 +93,7 @@ def _fetch_noise_configs(
 def _fetch_split(
     connection: Connection,
     splits: list[str],
-    noise_config_ids,
+    noise_config_ids: list[int] | None,
 ) -> tuple[list[Utterance], list[NoiseConfig]]:
     return (
         _fetch_utterances(connection, splits),
@@ -185,7 +176,7 @@ class AdditiveNoiseDataset(Dataset):
         crop: bool,
         max_frames: int | None = None,
         seed: int | None = None,
-        use_pcs400: bool = False,
+        pcs400: bool = False,
     ) -> None:
         if not utterances:
             raise ValueError("utterances must be non-empty")
@@ -204,7 +195,7 @@ class AdditiveNoiseDataset(Dataset):
         self.crop = crop
         self.max_frames = max_frames
         self.seed = seed
-        self.use_pcs400 = use_pcs400
+        self.pcs400 = pcs400
 
     def __len__(self) -> int:
         return len(self.utterances)
@@ -244,46 +235,32 @@ class AdditiveNoiseDataset(Dataset):
         clean, noisy = _normalize_pair(clean, noisy, self.normalize)
         if self.crop:
             clean, noisy = _crop_or_pad(clean, noisy, self.segment_size, rng)
-        if self.use_pcs400:
+        if self.pcs400:
             clean = _apply_pcs(clean)
         return clean, noisy
 
 
-def _metadata_path(config: SimpleNamespace) -> Path:
-    sql_root = getattr(config.data.librispeech, "sql_root", None)
-    if sql_root:
-        return Path(sql_root)
-    return SPEECH_UTILS_DB_METADATA_PATH
-
-
 def build_datasets(config: SimpleNamespace) -> tuple[AdditiveNoiseDataset, AdditiveNoiseDataset]:
+    """LibriSpeech plus additive noise. PCS400 is applied to training clean speech only."""
     data = config.data
-    if data.dataset != "librispeech":
-        raise ValueError(
-            f"unsupported dataset {data.dataset!r}; only 'librispeech' is supported"
-        )
-    ls = data.librispeech
-    train_splits = _as_list(ls.train_splits)
-    valid_splits = _as_list(ls.validation_splits)
-    if not train_splits:
-        raise ValueError("data.librispeech.train_splits is required")
-    if not valid_splits:
-        raise ValueError("data.librispeech.validation_splits is required")
+    if not data.train_splits:
+        raise ValueError("data.train_splits is required")
+    if not data.validation_splits:
+        raise ValueError("data.validation_splits is required")
 
-    database_path = _metadata_path(config)
+    database_path = SPEECH_UTILS_DB_METADATA_PATH
     with Connection(database_path, read_only=True) as connection:
         train_utterances, train_noises = _fetch_split(
-            connection, train_splits, ls.noise_config_ids
+            connection, data.train_splits, data.noise_config_ids
         )
         valid_utterances, valid_noises = _fetch_split(
-            connection, valid_splits, ls.noise_config_ids
+            connection, data.validation_splits, data.noise_config_ids
         )
 
     frame_counts = [int(utt.frames) for utt in train_utterances if utt.frames]
     if not frame_counts:
         raise ValueError("train utterances are missing frames")
     max_frames = max(frame_counts)
-    use_pcs400 = bool(getattr(config.train, "use_pcs400", False))
     trainset = AdditiveNoiseDataset(
         utterances=train_utterances,
         noise_configs=train_noises,
@@ -292,7 +269,7 @@ def build_datasets(config: SimpleNamespace) -> tuple[AdditiveNoiseDataset, Addit
         segment_size=data.segment_size,
         normalize=data.normalize,
         crop=True,
-        use_pcs400=use_pcs400,
+        pcs400=getattr(data, "pcs400", False),
     )
     validset = AdditiveNoiseDataset(
         utterances=valid_utterances,
@@ -303,6 +280,6 @@ def build_datasets(config: SimpleNamespace) -> tuple[AdditiveNoiseDataset, Addit
         normalize=data.normalize,
         crop=False,
         max_frames=max_frames,
-        seed=config.train.env.seed,
+        seed=config.train.seed,
     )
     return trainset, validset

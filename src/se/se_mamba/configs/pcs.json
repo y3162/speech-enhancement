@@ -1,8 +1,5 @@
 {
-    "name": "se_mamba",
-    "checkpoint_root": "data/checkpoints/se_mamba",
     "data": {
-        "dataset": "librispeech",
         "sampling_rate": 16000,
         "segment_size": 32000,
         "normalize": "energy",
@@ -12,12 +9,10 @@
             "win_size": 400,
             "compress_factor": 0.3
         },
-        "librispeech": {
-            "sql_root": null,
-            "train_splits": ["train-clean-100", "train-clean-360"],
-            "validation_splits": ["dev-clean"],
-            "noise_config_ids": null
-        }
+        "train_splits": ["train-clean-100", "train-clean-360"],
+        "validation_splits": ["dev-clean"],
+        "noise_config_ids": null,
+        "pcs400": true
     },
     "model": {
         "hid_feature": 64,
@@ -26,22 +21,17 @@
         "d_conv": 4,
         "expand": 4,
         "norm_epsilon": 1e-05,
-        "beta": 2.0,
-        "input_channel": 2,
-        "output_channel": 1
+        "beta": 2.0
     },
     "train": {
-        "env": {
-            "batch_size": 4,
-            "seed": 42,
-            "num_workers": 4,
-            "prefetch_factor": 2,
-            "epochs": 200,
-            "summary_interval": 100,
-            "max_steps": null,
-            "val_batch_size": 4,
-            "pesq_num_workers": 4
-        },
+        "batch_size": 4,
+        "epochs": 200,
+        "seed": 42,
+        "num_workers": 4,
+        "prefetch_factor": 2,
+        "val_batch_size": 4,
+        "pesq_num_workers": 4,
+        "log_interval": 100,
         "optim": {
             "learning_rate": 0.0005,
             "adam_b1": 0.8,
@@ -49,13 +39,12 @@
             "lr_decay": 0.99
         },
         "loss": {
-            "metric": 0.05,
             "magnitude": 0.9,
             "phase": 0.3,
             "complex": 0.1,
+            "consistency": 0.1,
             "time": 0.2,
-            "consistancy": 0.1
-        },
-        "use_pcs400": true
+            "metric": 0.05
+        }
     }
 }

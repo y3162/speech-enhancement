@@ -1,25 +1,35 @@
-from types import SimpleNamespace
+import torch
+import torch.nn.functional as F
 
-from src.se.mag_phase.loss import MagPhaseMetricGANLoss, attach_total, mag_phase_terms
-from src.se.mag_phase.phase_loss import phase_loss_difference
+from src.se.common.phase_loss import phase_loss_difference
+from src.se.common.stft import Spec
 
 
-class MPSENetLoss(MagPhaseMetricGANLoss):
-    def __init__(self, weights) -> None:
-        super().__init__(weights, generated_from="reconstructed_mag")
-
-    def generator_loss(
-        self,
-        pred: SimpleNamespace,
-        target: SimpleNamespace,
-    ) -> SimpleNamespace:
-        spectral = mag_phase_terms(pred, target, phase_loss_difference)
-        terms = SimpleNamespace(
-            magnitude=spectral.magnitude,
-            phase=spectral.phase,
-            complex=spectral.complex,
-            stft=spectral.consistancy,
-            time=spectral.time,
-            metric=self.generator_metric(pred, target),
-        )
-        return attach_total(terms, self.weights)
+def generator_loss(
+    clean: Spec,
+    clean_audio: torch.Tensor,
+    gen: Spec,
+    gen_audio: torch.Tensor,
+    gen_hat: Spec,
+    metric_g: torch.Tensor,
+    w,
+) -> dict[str, torch.Tensor]:
+    """MP-SENet generator loss. gen_hat is a re-STFT of the generated waveform; metric_g is the discriminator output."""
+    ip_loss, gd_loss, iaf_loss = phase_loss_difference(clean.pha, gen.pha)
+    losses = {
+        "magnitude": F.mse_loss(clean.mag, gen.mag),
+        "phase": ip_loss + gd_loss + iaf_loss,
+        "complex": F.mse_loss(clean.com, gen.com) * 2,
+        "consistency": F.mse_loss(gen.com, gen_hat.com) * 2,
+        "time": F.l1_loss(clean_audio, gen_audio),
+        "metric": F.mse_loss(metric_g.flatten(), torch.ones_like(metric_g.flatten())),
+    }
+    losses["total"] = (
+        w.magnitude * losses["magnitude"]
+        + w.phase * losses["phase"]
+        + w.complex * losses["complex"]
+        + w.consistency * losses["consistency"]
+        + w.time * losses["time"]
+        + w.metric * losses["metric"]
+    )
+    return losses

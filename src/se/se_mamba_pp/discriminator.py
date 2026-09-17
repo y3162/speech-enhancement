@@ -1,38 +1,10 @@
-from types import SimpleNamespace
+from typing import NamedTuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import weight_norm
 from torchaudio.transforms import Resample
-
-
-def feature_loss(
-    fmap_r: list[list[torch.Tensor]],
-    fmap_g: list[list[torch.Tensor]],
-) -> torch.Tensor:
-    loss = 0
-    for real_maps, fake_maps in zip(fmap_r, fmap_g):
-        for real, fake in zip(real_maps, fake_maps):
-            loss += torch.mean(torch.abs(real - fake))
-    return loss * 2
-
-
-def lsgan_discriminator_loss(
-    disc_real_outputs: list[torch.Tensor],
-    disc_generated_outputs: list[torch.Tensor],
-) -> torch.Tensor:
-    loss = 0
-    for real, fake in zip(disc_real_outputs, disc_generated_outputs):
-        loss = loss + torch.mean((1 - real) ** 2) + torch.mean(fake ** 2)
-    return loss
-
-
-def lsgan_generator_loss(disc_outputs: list[torch.Tensor]) -> torch.Tensor:
-    loss = 0
-    for fake in disc_outputs:
-        loss = loss + torch.mean((1 - fake) ** 2)
-    return loss
 
 
 def _pair_outputs(discriminators, y: torch.Tensor, y_hat: torch.Tensor):
@@ -252,22 +224,24 @@ class MultiResolutionDiscriminator(nn.Module):
         return _pair_outputs(self.discriminators, y, y_hat)
 
 
+class DiscriminatorOutputs(NamedTuple):
+    cqt_real: list[torch.Tensor]
+    cqt_fake: list[torch.Tensor]
+    cqt_fmap_real: list[list[torch.Tensor]]
+    cqt_fmap_fake: list[list[torch.Tensor]]
+    mrd_real: list[torch.Tensor]
+    mrd_fake: list[torch.Tensor]
+    mrd_fmap_real: list[list[torch.Tensor]]
+    mrd_fmap_fake: list[list[torch.Tensor]]
+
+
 class SEMambaPPDiscriminator(nn.Module):
+    """Three CQT discriminators plus three multi-resolution STFT discriminators. Input is waveform [B, 1, T]."""
+
     def __init__(self) -> None:
         super().__init__()
         self.cqt = MultiScaleSubbandCQTDiscriminator()
         self.mrd = MultiResolutionDiscriminator()
 
-    def forward(self, y: torch.Tensor, y_hat: torch.Tensor) -> SimpleNamespace:
-        y_dq_r, y_dq_g, fmap_q_r, fmap_q_g = self.cqt(y, y_hat)
-        y_dr_r, y_dr_g, fmap_r_r, fmap_r_g = self.mrd(y, y_hat)
-        return SimpleNamespace(
-            cqt_real=y_dq_r,
-            cqt_fake=y_dq_g,
-            cqt_fmap_real=fmap_q_r,
-            cqt_fmap_fake=fmap_q_g,
-            mrd_real=y_dr_r,
-            mrd_fake=y_dr_g,
-            mrd_fmap_real=fmap_r_r,
-            mrd_fmap_fake=fmap_r_g,
-        )
+    def forward(self, y: torch.Tensor, y_hat: torch.Tensor) -> DiscriminatorOutputs:
+        return DiscriminatorOutputs(*self.cqt(y, y_hat), *self.mrd(y, y_hat))

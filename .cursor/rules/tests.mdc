@@ -6,9 +6,10 @@ alwaysApply: false
 
 # テスト
 
-- 実行は `tests/run.sh`。リポジトリルートを `PYTHONPATH` にし、環境変数は **実行時** `mktemp` に向ける。ホストの DB パスを書かない。
+- 実行は `tests/run.sh`（`PYTHON=... bash tests/run.sh` で使う python を差し替えられる）。リポジトリルートを `PYTHONPATH` にし、環境変数は **実行時** `mktemp` に向ける。ホストの DB パスを書かない。
 - 数値はテスト内で作ったテンソルだけ。wav / checkpoint / duckdb を置かない。
-- 設定 JSON は `src/se/*/configs/` のリポジトリ内ファイルを読む。
+- 設定 JSON は `src/se/*/configs/` のリポジトリ内ファイルを `src.se.common.training.load_config` で読む。
 - `mamba_ssm` や `nnAudio` が無い環境では該当テストを skip する。無い依存で fail にしない。
-- generator の state_dict は全キー列挙せず、個数と番兵（`TSTransformer` / `TSMamba` / `forward_blocks.0` / `downsamples.1`）で見る。
+- generator の state_dict は全キー列挙せず、個数と番兵（`TSTransformer` / `TSMamba` / `forward_block.` / `downsamples.0.` / `mask_decoder.activation`）で見る。
 - `unittest` を使う。`discover -s tests/se` のため `tests.se.*` 同士の import に頼らない（各ファイルでパスを完結させる）。
+- `init_distributed()` や DDP をテストから呼ばない（process group 副作用）。`parse_args` は `sys.argv` を `mock.patch` して呼ぶ。

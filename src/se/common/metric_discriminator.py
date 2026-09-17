@@ -2,10 +2,12 @@ import torch
 import torch.nn as nn
 from torch.nn.utils import spectral_norm
 
-from src.se.mag_phase.activations import LearnableSigmoid1d
+from src.se.common.activations import LearnableSigmoid1d
 
 
 class MetricDiscriminator(nn.Module):
+    """Regresses PESQ in [0, 1] from a pair of clean and evaluated magnitudes (MetricGAN)."""
+
     def __init__(self, dim: int = 16, in_channel: int = 2) -> None:
         super().__init__()
         self.layers = nn.Sequential(
