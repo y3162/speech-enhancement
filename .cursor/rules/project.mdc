@@ -6,7 +6,7 @@ alwaysApply: true
 # このリポジトリの前提
 
 - import はリポジトリルートを `PYTHONPATH` にした `from src.se...` / `from src.asr...` / `from src.data...`。パッケージ名 `se` 単体ではない。
-- `src.se.common.stft` や `src.se.common.training` の import に環境変数は不要。`src.se.common.dataset` の import も不要。`build_datasets` や DB CLI の実行時に `SPEECH_DB_ROOT_DIR` と `SPEECH_CORPORA_ROOT_DIR` が無いと `RuntimeError` になる。
+- `src.se.common.stft` や `src.se.common.training` の import に環境変数は不要。`src.se.common.dataset` の import も不要。`build_datasets` 実行時は `SPEECH_DB_ROOT_DIR`、DB CLI 実行時はそれに加えて `SPEECH_CORPORA_ROOT_DIR` が無いと `RuntimeError` になる。
 - 仮想環境はマシン別（`.venvs/turing` / `tensor` / `shannon`）。コードやテストにホストパスや特定 venv を書かない。Python は PATH 上のものを使う。
 - 生データは git 外（`/corpora/`、`/data/`）。テストやルールにホストの wav・DuckDB・絶対パスを書かない。テスト実行時の temp 生成は可。
 - テストコードは Git 管理対象。普段の回帰は `tests/run.sh`、GPU / 実モデルは `tests/run_gpu.sh`。検証用の一時スクリプトをリポジトリに残さない。

@@ -11,7 +11,8 @@
         },
         "train_splits": ["train-clean-100", "train-clean-360"],
         "validation_splits": ["dev-clean"],
-        "noise_config_ids": null
+        "noise_config_ids": null,
+        "pcs400": false
     },
     "model": {
         "dense_channel": 64,

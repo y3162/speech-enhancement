@@ -10,11 +10,10 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from src.data.audio import read_audio_segment
-from src.data.db import Connection, fetch_noise_configs, fetch_utterances, metadata_path
-from src.data.noise import generate
-from src.data.schema import NoiseConfig, Utterance
+from src.data.db import Connection, fetch_noise_configs, fetch_noises, fetch_utterances, metadata_path
+from src.data.noise import AdditiveStep, generate, parse_pipeline
+from src.data.schema import Utterance
 
-_CONNECTIONS: dict[tuple[int, str], Connection] = {}
 _LIBRISPEECH_CORPUS = "LibriSpeech"
 
 
@@ -22,16 +21,6 @@ def worker_init_fn(_worker_id: int) -> None:
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
     torch.set_num_threads(1)
-    _CONNECTIONS.clear()
-
-
-def _connection(database_path: Path) -> Connection:
-    key = (os.getpid(), str(database_path))
-    connection = _CONNECTIONS.get(key)
-    if connection is None:
-        connection = Connection(database_path, read_only=True)
-        _CONNECTIONS[key] = connection
-    return connection
 
 
 def _noise_split(subsets: list[str]) -> str:
@@ -48,21 +37,6 @@ def _noise_split(subsets: list[str]) -> str:
     if len(kinds) != 1:
         raise ValueError(f"utterance subsets must map to one noise split, got {subsets} -> {kinds}")
     return next(iter(kinds))
-
-
-def _fetch_split(
-    connection: Connection,
-    splits: list[str],
-    noise_config_ids: list[int] | None,
-) -> tuple[list[Utterance], list[NoiseConfig]]:
-    utterances = fetch_utterances(connection, _LIBRISPEECH_CORPUS, splits)
-    if not utterances:
-        raise ValueError("no LibriSpeech utterances found for splits: " + ", ".join(splits))
-    noise_split = _noise_split(splits)
-    noise_configs = fetch_noise_configs(connection, noise_split, noise_config_ids)
-    if not noise_configs:
-        raise ValueError(f"no noise_configs found for split={noise_split!r} ids={noise_config_ids}")
-    return utterances, noise_configs
 
 
 def _sample_seed(seed: int, index: int) -> int:
@@ -126,8 +100,7 @@ class AdditiveNoiseDataset(Dataset):
     def __init__(
         self,
         utterances: list[Utterance],
-        noise_configs: list[NoiseConfig],
-        database_path: Path,
+        noise_pipelines: list[tuple[AdditiveStep, ...]],
         sampling_rate: int,
         segment_size: int,
         normalize: str,
@@ -138,13 +111,12 @@ class AdditiveNoiseDataset(Dataset):
     ) -> None:
         if not utterances:
             raise ValueError("utterances must be non-empty")
-        if not noise_configs:
-            raise ValueError("noise_configs must be non-empty")
+        if not noise_pipelines:
+            raise ValueError("noise_pipelines must be non-empty")
         if normalize not in ("energy", "peak"):
             raise ValueError(f"unsupported normalize {normalize!r}; expected 'energy' or 'peak'")
         self.utterances = utterances
-        self.noise_configs = noise_configs
-        self.database_path = Path(database_path)
+        self.noise_pipelines = noise_pipelines
         self.sampling_rate = sampling_rate
         self.segment_size = segment_size
         self.normalize = normalize
@@ -170,15 +142,10 @@ class AdditiveNoiseDataset(Dataset):
             num_frames = min(num_frames, self.max_frames)
 
         rng = random if self.seed is None else random.Random(_sample_seed(self.seed, index))
-        noise_config = rng.choice(self.noise_configs)
+        steps = rng.choice(self.noise_pipelines)
 
         clean_2d = read_audio_segment(utterance.audio_path, 0, num_frames)
-        noise_2d = generate(
-            clean_2d,
-            utterance.sample_rate,
-            noise_config,
-            _connection(self.database_path),
-        )
+        noise_2d = generate(clean_2d, utterance.sample_rate, steps)
         clean = torch.from_numpy(_to_mono_waveform(clean_2d, utterance.audio_path))
         noisy = torch.from_numpy(_to_mono_waveform(clean_2d + noise_2d, utterance.audio_path))
         clean, noisy = _normalize_pair(clean, noisy, self.normalize)
@@ -199,29 +166,42 @@ def build_datasets(cfg: SimpleNamespace) -> tuple[AdditiveNoiseDataset, Additive
     if not data.validation_splits:
         raise ValueError("data.validation_splits is required")
 
-    database_path = metadata_path()
-    with Connection(database_path, read_only=True) as connection:
-        train_utterances, train_noises = _fetch_split(connection, data.train_splits, data.noise_config_ids)
-        valid_utterances, valid_noises = _fetch_split(connection, data.validation_splits, data.noise_config_ids)
+    with Connection(metadata_path(), read_only=True) as connection:
+        noises_by_id = {int(noise.id): noise for noise in fetch_noises(connection) if noise.id is not None}
 
+        train_utterances = fetch_utterances(connection, _LIBRISPEECH_CORPUS, data.train_splits)
+        if not train_utterances:
+            raise ValueError("no LibriSpeech utterances found for splits: " + ", ".join(data.train_splits))
+        train_noise_split = _noise_split(data.train_splits)
+        train_noise_configs = fetch_noise_configs(connection, train_noise_split, data.noise_config_ids)
+        if not train_noise_configs:
+            raise ValueError(f"no noise_configs found for split={train_noise_split!r} ids={data.noise_config_ids}")
+        train_pipelines = [parse_pipeline(noise_config, noises_by_id) for noise_config in train_noise_configs]
+
+        valid_utterances = fetch_utterances(connection, _LIBRISPEECH_CORPUS, data.validation_splits)
+        if not valid_utterances:
+            raise ValueError("no LibriSpeech utterances found for splits: " + ", ".join(data.validation_splits))
+        valid_noise_split = _noise_split(data.validation_splits)
+        valid_noise_configs = fetch_noise_configs(connection, valid_noise_split, data.noise_config_ids)
+        if not valid_noise_configs:
+            raise ValueError(f"no noise_configs found for split={valid_noise_split!r} ids={data.noise_config_ids}")
+        valid_pipelines = [parse_pipeline(noise_config, noises_by_id) for noise_config in valid_noise_configs]
     frame_counts = [int(utt.frames) for utt in train_utterances if utt.frames]
     if not frame_counts:
         raise ValueError("train utterances are missing frames")
     max_frames = max(frame_counts)
     trainset = AdditiveNoiseDataset(
         utterances=train_utterances,
-        noise_configs=train_noises,
-        database_path=database_path,
+        noise_pipelines=train_pipelines,
         sampling_rate=data.sampling_rate,
         segment_size=data.segment_size,
         normalize=data.normalize,
         crop=True,
-        pcs400=getattr(data, "pcs400", False),
+        pcs400=data.pcs400,
     )
     validset = AdditiveNoiseDataset(
         utterances=valid_utterances,
-        noise_configs=valid_noises,
-        database_path=database_path,
+        noise_pipelines=valid_pipelines,
         sampling_rate=data.sampling_rate,
         segment_size=data.segment_size,
         normalize=data.normalize,

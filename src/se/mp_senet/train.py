@@ -19,7 +19,6 @@ from src.se.common.training import (
     build_loaders,
     init_distributed,
     load_checkpoint,
-    log,
     log_scalars,
     parse_args,
     seed_everything,
@@ -113,16 +112,17 @@ def main() -> None:
         sched_d.load_state_dict(state["sched_d"])
         start_epoch, steps, best_pesq = state["epoch"] + 1, state["steps"], state["best_pesq"]
         if rank == 0:
-            log(f"Resumed from epoch {start_epoch} (step {steps}, best_pesq={best_pesq:.3f})")
+            print(f"Resumed from epoch {start_epoch} (step {steps}, best_pesq={best_pesq:.3f})", flush=True)
 
     generator = DDP(generator, device_ids=[device.index])
     discriminator = DDP(discriminator, device_ids=[device.index])
     trainset, validset = build_datasets(cfg)
     train_loader, valid_loader = build_loaders(trainset, validset, cfg.train)
     if rank == 0:
-        log(
+        print(
             f"MP-SENet: {sum(p.numel() for p in generator.parameters()) / 1e6:.3f}M params, "
-            f"{dist.get_world_size()} GPU(s) x batch {cfg.train.batch_size}"
+            f"{dist.get_world_size()} GPU(s) x batch {cfg.train.batch_size}",
+            flush=True,
         )
 
     for epoch in range(start_epoch, cfg.train.epochs):
@@ -160,16 +160,20 @@ def main() -> None:
 
             steps += 1
             if rank == 0 and steps % cfg.train.log_interval == 0:
-                log(f"epoch {epoch + 1} step {steps}: gen={float(losses['total']):.3f} disc={float(loss_d):.3f}")
+                print(
+                    f"epoch {epoch + 1} step {steps}: gen={float(losses['total']):.3f} disc={float(loss_d):.3f}",
+                    flush=True,
+                )
                 log_scalars(writer, "train", {**losses, "disc": loss_d}, steps)
 
         metrics = validate(generator, discriminator, valid_loader, cfg, device)
         sched_g.step()
         sched_d.step()
         if rank == 0:
-            log(
+            print(
                 f"validation epoch {epoch + 1}/{cfg.train.epochs}: "
-                f"PESQ={metrics['pesq']:.3f} gen={metrics['total']:.3f}"
+                f"PESQ={metrics['pesq']:.3f} gen={metrics['total']:.3f}",
+                flush=True,
             )
             log_scalars(writer, "valid", metrics, epoch + 1)
             if metrics["pesq"] > best_pesq:

@@ -8,7 +8,7 @@ import torch
 
 from src.data.audio import read_audio_segment
 from src.data.db import Connection, fetch_noise_configs, fetch_noises, fetch_utterances, import_rows, metadata_path
-from src.data.noise import generate
+from src.data.noise import generate, parse_pipeline
 from src.data.schema import (
     NOISE_CONFIGS_TABLE,
     NOISES_TABLE,
@@ -155,8 +155,7 @@ class NormalizePairTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             AdditiveNoiseDataset(
                 utterances=[Utterance(corpus="LibriSpeech", audio_path=Path("x.flac"))],
-                noise_configs=[NoiseConfig(json={}, split="train")],
-                database_path=Path("."),
+                noise_pipelines=[()],
                 sampling_rate=SAMPLE_RATE,
                 segment_size=32,
                 normalize="nope",
@@ -222,11 +221,11 @@ class AdditiveNoiseDatasetTest(unittest.TestCase):
     def _dataset(self, **kwargs: object) -> AdditiveNoiseDataset:
         with Connection(self.db_path, read_only=True) as connection:
             utts = fetch_utterances(connection, "LibriSpeech", ["train-clean-100"])
-            noises = fetch_noise_configs(connection, "train", None)
+            configs = fetch_noise_configs(connection, "train", None)
+            noises_by_id = {int(row.id): row for row in fetch_noises(connection) if row.id is not None}
         defaults: dict[str, object] = {
             "utterances": utts,
-            "noise_configs": noises,
-            "database_path": self.db_path,
+            "noise_pipelines": [parse_pipeline(config, noises_by_id) for config in configs],
             "sampling_rate": SAMPLE_RATE,
             "segment_size": N_SAMPLES,
             "normalize": "energy",
@@ -243,8 +242,7 @@ class AdditiveNoiseDatasetTest(unittest.TestCase):
         self.assertEqual(tuple(noisy.shape), (N_SAMPLES,))
         utterance = dataset.utterances[0]
         clean_2d = read_audio_segment(utterance.audio_path, 0, int(utterance.frames))
-        with Connection(self.db_path, read_only=True) as connection:
-            noise_2d = generate(clean_2d, SAMPLE_RATE, dataset.noise_configs[0], connection)
+        noise_2d = generate(clean_2d, SAMPLE_RATE, dataset.noise_pipelines[0])
         raw_clean = torch.from_numpy(np.ascontiguousarray(clean_2d[:, 0]))
         raw_noisy = torch.from_numpy(np.ascontiguousarray((clean_2d + noise_2d)[:, 0]))
         expected_clean, expected_noisy = _normalize_pair(raw_clean, raw_noisy, "energy")

@@ -4,18 +4,22 @@ import unittest
 import torch
 import torchaudio
 
-from src.asr.parakeet_tdt_0_6b_v2 import FrozenParakeetTDT06BV2
+from src.asr.parakeet_tdt_0_6b_v2 import ParakeetTDT06BV2
 
 DEVICE: torch.device
-MODEL: FrozenParakeetTDT06BV2
+MODEL: ParakeetTDT06BV2
 
 
 def setUpModule() -> None:
     global DEVICE, MODEL
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for Parakeet TDT tests")
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
     DEVICE = torch.device("cuda")
-    MODEL = FrozenParakeetTDT06BV2().to(DEVICE)
+    MODEL = ParakeetTDT06BV2().to(DEVICE)
 
 
 def _waveforms(batch: int = 2, samples: int = 16000, requires_grad: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
@@ -27,7 +31,7 @@ def _waveforms(batch: int = 2, samples: int = 16000, requires_grad: bool = False
     return wav, lengths
 
 
-def _has_nonzero_param_grad(model: FrozenParakeetTDT06BV2) -> bool:
+def _has_nonzero_param_grad(model: ParakeetTDT06BV2) -> bool:
     for parameter in model.parameters():
         if parameter.grad is not None and torch.isfinite(parameter.grad).all() and parameter.grad.abs().sum() > 0:
             return True
@@ -54,8 +58,10 @@ class ParakeetLossTest(_ParakeetCase):
         self.assertEqual(tuple(nll.shape), (2,))
         self.assertTrue(nll.requires_grad)
         self.assertEqual(float(nll[1].detach()), 0.0)
-        solo = MODEL.loss(wav[:1], lengths[:1], ["hello"])
-        self.assertTrue(torch.allclose(nll[0], solo[0], atol=1e-4, rtol=1e-4))
+        mixed_valid = nll[0].detach()
+        solo_wav = wav[0:1].detach().clone().requires_grad_(True)
+        solo = MODEL.loss(solo_wav, lengths[:1], ["hello"])
+        self.assertTrue(torch.allclose(mixed_valid, solo[0].detach(), atol=1e-4, rtol=1e-4))
 
     def test_zero_length_nll_is_zero(self) -> None:
         wav, lengths = _waveforms(requires_grad=True)
@@ -184,12 +190,10 @@ class ParakeetRecognizeTest(_ParakeetCase):
         wav, lengths = _waveforms()
         results = MODEL.recognize(wav, lengths)
         self.assertEqual(len(results), 2)
-        hop = int(MODEL.model.preprocessor.featurizer.hop_length)
-        subsample = int(MODEL.model.encoder.subsampling_factor)
         for rec in results:
             self.assertIsInstance(rec.text, str)
             self.assertEqual(len(rec.frame_token_index), rec.encoded_length)
-            self.assertEqual(rec.samples_per_encoder_frame, hop * subsample)
+            self.assertEqual(rec.samples_per_encoder_frame, MODEL.samples_per_encoder_frame)
             for token in rec.tokens:
                 self.assertGreaterEqual(token.start_offset, 0)
                 self.assertLess(token.start_offset, token.end_offset)

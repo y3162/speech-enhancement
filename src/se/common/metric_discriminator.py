@@ -8,10 +8,11 @@ from src.se.common.activations import LearnableSigmoid1d
 class MetricDiscriminator(nn.Module):
     """Regresses PESQ in [0, 1] from a pair of clean and evaluated magnitudes (MetricGAN)."""
 
-    def __init__(self, dim: int = 16, in_channel: int = 2) -> None:
+    def __init__(self) -> None:
         super().__init__()
+        dim = 16
         self.layers = nn.Sequential(
-            spectral_norm(nn.Conv2d(in_channel, dim, (4, 4), (2, 2), (1, 1), bias=False)),
+            spectral_norm(nn.Conv2d(2, dim, (4, 4), (2, 2), (1, 1), bias=False)),
             nn.InstanceNorm2d(dim, affine=True),
             nn.PReLU(dim),
             spectral_norm(nn.Conv2d(dim, dim * 2, (4, 4), (2, 2), (1, 1), bias=False)),

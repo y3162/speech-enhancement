@@ -39,7 +39,7 @@ class EncodeResult:
     layer_outputs: dict[int, torch.Tensor]
 
 
-class FrozenParakeetTDT06BV2(nn.Module):
+class ParakeetTDT06BV2(nn.Module):
     def __init__(
         self,
     ) -> None:
@@ -117,69 +117,6 @@ class FrozenParakeetTDT06BV2(nn.Module):
                 resolved.append(layer_index)
         return resolved
 
-    def _encode_valid(
-        self,
-        waveforms: torch.Tensor,
-        lengths: torch.Tensor,
-        layer_indices: Sequence[int],
-    ) -> EncodeResult:
-        features, feature_lengths = FilterbankFeatures.forward(
-            self.model.preprocessor.featurizer,
-            waveforms.to(dtype=torch.float32),
-            lengths,
-        )
-        layer_outputs: dict[int, torch.Tensor] = {}
-        handles = []
-
-        def capture_layer(layer_index: int) -> Any:
-            def hook(_module: nn.Module, _args: Any, out: torch.Tensor) -> None:
-                layer_outputs[layer_index] = out.transpose(1, 2)
-
-            return hook
-
-        try:
-            for layer_index in layer_indices:
-                handles.append(self.model.encoder.layers[layer_index].register_forward_hook(capture_layer(layer_index)))
-            encoded, encoded_length = self.model.encoder(
-                audio_signal=features,
-                length=feature_lengths,
-            )
-        finally:
-            for handle in handles:
-                handle.remove()
-        return EncodeResult(
-            encoded=encoded,
-            encoded_length=encoded_length.to(dtype=torch.int64),
-            layer_outputs=layer_outputs,
-        )
-
-    def _empty_encoded(
-        self,
-        waveforms: torch.Tensor,
-        lengths: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size = waveforms.shape[0]
-        d_model = int(self.model.encoder.d_model)
-        encoded = waveforms.new_zeros(batch_size, d_model, 0) + waveforms.sum() * 0
-        encoded_length = torch.zeros(batch_size, device=lengths.device, dtype=torch.int64)
-        return encoded, encoded_length
-
-    def _scatter_encoded(
-        self,
-        encoded_valid: torch.Tensor,
-        encoded_length_valid: torch.Tensor,
-        idx: torch.Tensor | None,
-        batch_size: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if idx is None:
-            return encoded_valid, encoded_length_valid
-        d_model = encoded_valid.shape[1]
-        time = encoded_valid.shape[2]
-        index = idx.view(-1, 1, 1).expand_as(encoded_valid)
-        encoded = encoded_valid.new_zeros(batch_size, d_model, time).scatter(0, index, encoded_valid)
-        encoded_length = encoded_length_valid.new_zeros(batch_size).scatter(0, idx, encoded_length_valid)
-        return encoded, encoded_length
-
     def encode(
         self,
         waveforms: torch.Tensor,
@@ -190,7 +127,8 @@ class FrozenParakeetTDT06BV2(nn.Module):
         batch_size = waveforms.shape[0]
         valid = lengths > 0
         if not bool(valid.any()):
-            encoded, encoded_length = self._empty_encoded(waveforms, lengths)
+            encoded = waveforms.new_zeros(batch_size, int(self.model.encoder.d_model), 0) + waveforms.sum() * 0
+            encoded_length = torch.zeros(batch_size, device=lengths.device, dtype=torch.int64)
             return EncodeResult(
                 encoded=encoded,
                 encoded_length=encoded_length,
@@ -203,21 +141,49 @@ class FrozenParakeetTDT06BV2(nn.Module):
             idx = valid.nonzero(as_tuple=False).squeeze(1)
             waveforms_valid = waveforms.index_select(0, idx)
             lengths_valid = lengths.index_select(0, idx)
-        encoded_valid = self._encode_valid(waveforms_valid, lengths_valid, layer_indices)
-        encoded, encoded_length = self._scatter_encoded(
-            encoded_valid.encoded,
-            encoded_valid.encoded_length,
-            idx,
-            batch_size,
+        # AudioPreprocessor.forward is @torch.no_grad(); FilterbankFeatures keeps waveform grads.
+        features, feature_lengths = FilterbankFeatures.forward(
+            self.model.preprocessor.featurizer,
+            waveforms_valid.to(dtype=torch.float32),
+            lengths_valid,
         )
-        layer_outputs = {}
-        for layer_index, layer_tensor in encoded_valid.layer_outputs.items():
-            layer_outputs[layer_index], _ = self._scatter_encoded(
-                layer_tensor,
-                encoded_valid.encoded_length,
-                idx,
-                batch_size,
+        layer_outputs_valid: dict[int, torch.Tensor] = {}
+        handles = []
+
+        def capture_layer(layer_index: int) -> Any:
+            def hook(_module: nn.Module, _args: Any, out: torch.Tensor) -> None:
+                layer_outputs_valid[layer_index] = out.transpose(1, 2)
+
+            return hook
+
+        try:
+            for layer_index in layer_indices:
+                handles.append(self.model.encoder.layers[layer_index].register_forward_hook(capture_layer(layer_index)))
+            encoded_valid, encoded_length_valid = self.model.encoder(
+                audio_signal=features,
+                length=feature_lengths,
             )
+        finally:
+            for handle in handles:
+                handle.remove()
+        encoded_length_valid = encoded_length_valid.to(dtype=torch.int64)
+        if idx is None:
+            return EncodeResult(
+                encoded=encoded_valid,
+                encoded_length=encoded_length_valid,
+                layer_outputs=layer_outputs_valid,
+            )
+        d_model = encoded_valid.shape[1]
+        time = encoded_valid.shape[2]
+        index = idx.view(-1, 1, 1).expand_as(encoded_valid)
+        encoded = encoded_valid.new_zeros(batch_size, d_model, time).scatter(0, index, encoded_valid)
+        encoded_length = encoded_length_valid.new_zeros(batch_size).scatter(0, idx, encoded_length_valid)
+        layer_outputs = {}
+        for layer_index, layer_tensor in layer_outputs_valid.items():
+            layer_index_map = idx.view(-1, 1, 1).expand_as(layer_tensor)
+            layer_outputs[layer_index] = layer_tensor.new_zeros(
+                batch_size, layer_tensor.shape[1], layer_tensor.shape[2]
+            ).scatter(0, layer_index_map, layer_tensor)
         return EncodeResult(encoded=encoded, encoded_length=encoded_length, layer_outputs=layer_outputs)
 
     def forward(
@@ -228,27 +194,23 @@ class FrozenParakeetTDT06BV2(nn.Module):
     ) -> EncodeResult:
         return self.encode(waveforms, lengths, layers)
 
-    def _to_int_list(
-        self,
-        value: Any,
-    ) -> list[int]:
-        if value is None:
-            return []
-        if torch.is_tensor(value):
-            if value.numel() == 0:
-                return []
-            return [int(v) for v in value.detach().cpu().tolist()]
-        return [int(v) for v in value]
-
     def _timed_recognition(
         self,
         prediction: Any,
         encoded_length: int,
-        return_text: bool = True,
     ) -> Recognition:
-        token_ids = self._to_int_list(prediction.y_sequence)
-        starts = self._to_int_list(prediction.timestamp)
-        durations = self._to_int_list(getattr(prediction, "token_duration", None))
+        def as_ints(value: Any) -> list[int]:
+            if value is None:
+                return []
+            if torch.is_tensor(value):
+                if value.numel() == 0:
+                    return []
+                value = value.detach().cpu().tolist()
+            return [int(v) for v in value]
+
+        token_ids = as_ints(prediction.y_sequence)
+        starts = as_ints(prediction.timestamp)
+        durations = as_ints(getattr(prediction, "token_duration", None))
         if not (len(token_ids) == len(starts) == len(durations)):
             raise RuntimeError(
                 f"y_sequence/timestamp/token_duration lengths differ: {len(token_ids)}, {len(starts)}, {len(durations)}"
@@ -263,12 +225,7 @@ class FrozenParakeetTDT06BV2(nn.Module):
                 continue
             end_offset = min(start_offset + max(int(duration), 1), encoded_length)
             kept.append((token_id, start_offset, end_offset))
-        if return_text:
-            token_texts = self.model.decoding.decode_ids_to_tokens([token_id for token_id, _, _ in kept])
-            text = prediction.text
-        else:
-            token_texts = [""] * len(kept)
-            text = ""
+        token_texts = self.model.decoding.decode_ids_to_tokens([token_id for token_id, _, _ in kept])
         tokens = [
             Token(
                 token_id=token_id,
@@ -283,48 +240,17 @@ class FrozenParakeetTDT06BV2(nn.Module):
             for frame in range(token.start_offset, token.end_offset):
                 frame_token_index[frame] = token_index
         return Recognition(
-            text=text,
+            text=prediction.text,
             encoded_length=encoded_length,
             samples_per_encoder_frame=self.samples_per_encoder_frame,
             tokens=tokens,
             frame_token_index=frame_token_index,
         )
 
-    def _scatter_recognition(
-        self,
-        timed: list[Recognition],
-        idx: torch.Tensor | None,
-        batch_size: int,
-    ) -> list[Recognition]:
-        if idx is None:
-            return timed
-        results = [self._empty_recognition() for _ in range(batch_size)]
-        for source, destination in enumerate(idx.tolist()):
-            results[destination] = timed[source]
-        return results
-
-    def _rnnt_predictions(
-        self,
-        encoded: torch.Tensor,
-        encoded_length: torch.Tensor,
-    ) -> Any:
-        decoder_training = self.model.decoder.training
-        self.model.decoder.eval()
-        with torch.no_grad():
-            predictions = self.model.decoding.rnnt_decoder_predictions_tensor(
-                encoder_output=encoded.detach(),
-                encoded_lengths=encoded_length,
-                return_hypotheses=True,
-            )
-        self._set_decoder_backward_enabled(decoder_training)
-        return predictions
-
     def recognize_encoded(
         self,
         encoded: torch.Tensor,
         encoded_length: torch.Tensor,
-        *,
-        return_text: bool = True,
     ) -> list[Recognition]:
         batch_size = encoded.shape[0]
         valid = encoded_length > 0
@@ -338,36 +264,33 @@ class FrozenParakeetTDT06BV2(nn.Module):
             encoded_valid = encoded.index_select(0, idx)
             encoded_length_valid = encoded_length.index_select(0, idx)
         encoded_lengths = encoded_length_valid.detach().cpu().tolist()
-        predictions = self._rnnt_predictions(encoded_valid, encoded_length_valid)
+        decoder_training = self.model.decoder.training
+        self.model.decoder.eval()
+        with torch.no_grad():
+            predictions = self.model.decoding.rnnt_decoder_predictions_tensor(
+                encoder_output=encoded_valid.detach(),
+                encoded_lengths=encoded_length_valid,
+                return_hypotheses=True,
+            )
+        self._set_decoder_backward_enabled(decoder_training)
         timed = [
-            self._timed_recognition(prediction, int(encoded_lengths[i]), return_text=return_text)
-            for i, prediction in enumerate(predictions)
+            self._timed_recognition(prediction, int(encoded_lengths[i])) for i, prediction in enumerate(predictions)
         ]
-        return self._scatter_recognition(timed, idx, batch_size)
+        if idx is None:
+            return timed
+        results = [self._empty_recognition() for _ in range(batch_size)]
+        for source, destination in enumerate(idx.tolist()):
+            results[destination] = timed[source]
+        return results
 
     def recognize(
         self,
         waveforms: torch.Tensor,
         lengths: torch.Tensor,
-        *,
-        return_text: bool = True,
     ) -> list[Recognition]:
         with torch.no_grad():
             encoded = self.encode(waveforms, lengths)
-        return self.recognize_encoded(encoded.encoded, encoded.encoded_length, return_text=return_text)
-
-    def _pad_token_ids(
-        self,
-        token_ids: Sequence[Sequence[int]],
-        device: torch.device,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        target_lengths = torch.tensor([len(ids) for ids in token_ids], device=device, dtype=torch.int64)
-        max_length = int(target_lengths.max().item())
-        padded = torch.zeros((len(token_ids), max_length), device=device, dtype=torch.int64)
-        for i, ids in enumerate(token_ids):
-            if ids:
-                padded[i, : len(ids)] = torch.tensor(ids, device=device, dtype=torch.int64)
-        return padded, target_lengths
+        return self.recognize_encoded(encoded.encoded, encoded.encoded_length)
 
     def loss(
         self,
@@ -390,20 +313,25 @@ class FrozenParakeetTDT06BV2(nn.Module):
             waveforms = waveforms.index_select(0, idx)
             lengths = lengths.index_select(0, idx)
             token_id_lists = [token_id_lists[int(i)] for i in idx.tolist()]
-        targets, target_lengths = self._pad_token_ids(token_id_lists, waveforms.device)
-        encoded_valid = self._encode_valid(waveforms, lengths, ())
+        target_lengths = torch.tensor([len(ids) for ids in token_id_lists], device=waveforms.device, dtype=torch.int64)
+        max_length = int(target_lengths.max().item())
+        targets = torch.zeros((len(token_id_lists), max_length), device=waveforms.device, dtype=torch.int64)
+        for i, ids in enumerate(token_id_lists):
+            if ids:
+                targets[i, : len(ids)] = torch.tensor(ids, device=waveforms.device, dtype=torch.int64)
+        encoded = self.encode(waveforms, lengths)
         decoder_outputs, _, _ = self.model.decoder(
             targets=targets,
             target_length=target_lengths,
         )
         logits = self.model.joint.joint(
-            encoded_valid.encoded.transpose(1, 2),
+            encoded.encoded.transpose(1, 2),
             decoder_outputs.transpose(1, 2),
         )
         nll_valid = self.tdt_loss(
             acts=logits,
             labels=targets.to(dtype=torch.int64),
-            act_lens=encoded_valid.encoded_length.to(dtype=torch.int64),
+            act_lens=encoded.encoded_length.to(dtype=torch.int64),
             label_lens=target_lengths.to(dtype=torch.int64),
         )
         if idx is None:
