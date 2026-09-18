@@ -1,15 +1,16 @@
 ---
-description: tests/ は合成データのみ。実行は tests/run.sh
+description: tests/ は合成データ。軽量は tests/run.sh、GPU は tests/run_gpu.sh
 globs: tests/**/*
 alwaysApply: false
 ---
 
 # テスト
 
-- 実行は `tests/run.sh`（`PYTHON=... bash tests/run.sh` で使う python を差し替えられる）。リポジトリルートを `PYTHONPATH` にし、環境変数は **実行時** `mktemp` に向ける。ホストの DB パスを書かない。
-- 数値はテスト内で作ったテンソルだけ。wav / checkpoint / duckdb を置かない。
+- 軽量回帰は `tests/run.sh`、GPU / 実モデルは `tests/run_gpu.sh`（`PYTHON=... bash tests/run.sh` で使う python を差し替えられる）。リポジトリルートを `PYTHONPATH` にし、環境変数は **実行時** `mktemp` に向ける。ホストの DB パスを書かない。
+- 数値はテスト内で作ったテンソル、または temp に書いた小さな wav/flac/DuckDB。それらをリポジトリに置かない。
 - 設定 JSON は `src/se/*/configs/` のリポジトリ内ファイルを `src.se.common.training.load_config` で読む。
-- `mamba_ssm` や `nnAudio` が無い環境では該当テストを skip する。無い依存で fail にしない。
-- generator の state_dict は全キー列挙せず、個数と番兵（`TSTransformer` / `TSMamba` / `forward_block.` / `downsamples.0.` / `mask_decoder.activation`）で見る。
-- `unittest` を使う。`discover -s tests/se` のため `tests.se.*` 同士の import に頼らない（各ファイルでパスを完結させる）。
-- `init_distributed()` や DDP をテストから呼ばない（process group 副作用）。`parse_args` は `sys.argv` を `mock.patch` して呼ぶ。
+- `tests/se/test_*.py` と `tests/data/` が軽量。`tests/se/gpu_test_*.py` と `tests/asr/` は `run_gpu.sh` のみ。CUDA が無いときの GPU ランナーは skip せず失敗する。
+- `nnAudio` や `pesq` が無い環境では、そのクラスだけ skip する。`mamba_ssm` / NeMo を軽量テストから要求しない。
+- generator は構築・forward・入出力 shape・mask 契約を見る。`state_dict` のキー数は固定しない。
+- `unittest` を使う。共有は `tests.helpers` のみ。`tests.se` / `tests.data` / `tests.asr` 同士は import しない。
+- `init_distributed()` や DDP をテストから呼ばない。`parse_args` と data CLI は `sys.argv` を `mock.patch` して呼ぶ。
