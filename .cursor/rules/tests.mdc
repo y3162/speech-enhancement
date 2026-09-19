@@ -10,7 +10,5 @@ alwaysApply: false
 - 数値はテスト内で作ったテンソル、または temp に書いた小さな wav/flac/DuckDB。それらをリポジトリに置かない。
 - 設定 JSON は `src/se/*/configs/` のリポジトリ内ファイルを `src.se.common.training.load_config` で読む。
 - `tests/se/test_*.py` と `tests/data/` が軽量。`tests/se/gpu_test_*.py` と `tests/asr/` は `run_gpu.sh` のみ。CUDA が無いときの GPU ランナーは skip せず失敗する。
-- `nnAudio` や `pesq` が無い環境では、そのクラスだけ skip する。`mamba_ssm` / NeMo を軽量テストから要求しない。
-- generator は構築・forward・入出力 shape・mask 契約を見る。`state_dict` のキー数は固定しない。
 - `unittest` を使う。共有は `tests.helpers` のみ。`tests.se` / `tests.data` / `tests.asr` 同士は import しない。
 - `init_distributed()` や DDP をテストから呼ばない。`parse_args` と data CLI は `sys.argv` を `mock.patch` して呼ぶ。

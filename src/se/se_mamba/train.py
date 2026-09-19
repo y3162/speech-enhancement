@@ -1,5 +1,7 @@
 """Train SEMamba. torchrun --nproc_per_node=N -m src.se.se_mamba.train --run_dir DIR [--config JSON]"""
 
+import src.se.common.cuda_local as _cuda_local  # noqa: F401
+
 from pathlib import Path
 from types import SimpleNamespace
 

@@ -60,7 +60,8 @@ def init_distributed() -> tuple[torch.device, int]:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for training.")
     local_rank = int(os.environ["LOCAL_RANK"])
-    device = torch.device("cuda", local_rank)
+    device_index = 0 if torch.cuda.device_count() == 1 else local_rank
+    device = torch.device("cuda", device_index)
     torch.cuda.set_device(device)
     dist.init_process_group("nccl", timeout=timedelta(minutes=120), device_id=device)
     return device, dist.get_rank()
@@ -70,7 +71,7 @@ def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    torch.cuda.manual_seed(seed)
 
 
 def start_run(run_dir: Path, cfg: SimpleNamespace, rank: int) -> SummaryWriter | None:

@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -71,3 +72,27 @@ class UnpaddedTest(unittest.TestCase):
         self.assertEqual([len(row) for row in clean_list], [3, 4])
         self.assertEqual([len(row) for row in enhanced_list], [3, 4])
         self.assertTrue(np.array_equal(clean_list[0], np.array([0.0, 1.0, 2.0])))
+
+
+class PinLocalCudaDeviceTest(unittest.TestCase):
+    def test_selects_local_rank_entry_from_visible_list(self) -> None:
+        from src.se.common.cuda_local import pin_local_cuda_device
+
+        with mock.patch.dict(os.environ, {"LOCAL_RANK": "2", "CUDA_VISIBLE_DEVICES": "4,5,6,7"}):
+            pin_local_cuda_device()
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "6")
+
+    def test_uses_local_rank_when_visible_unset(self) -> None:
+        from src.se.common.cuda_local import pin_local_cuda_device
+
+        with mock.patch.dict(os.environ, {"LOCAL_RANK": "1"}, clear=True):
+            pin_local_cuda_device()
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "1")
+
+    def test_noop_without_local_rank(self) -> None:
+        from src.se.common.cuda_local import pin_local_cuda_device
+
+        with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0,1"}):
+            os.environ.pop("LOCAL_RANK", None)
+            pin_local_cuda_device()
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "0,1")

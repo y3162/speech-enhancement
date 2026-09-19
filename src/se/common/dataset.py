@@ -21,6 +21,7 @@ _LIBRISPEECH_CORPUS = "LibriSpeech"
 def worker_init_fn(_worker_id: int) -> None:
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
     torch.set_num_threads(1)
 
 
