@@ -6,6 +6,7 @@ import nemo.collections.asr as nemo_asr
 import torch
 import torch.nn as nn
 from nemo.collections.asr.parts.numba.rnnt_loss import TDTLossNumba
+from nemo.collections.asr.parts.preprocessing import features as nemo_features
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures
 from nemo.core.utils import numba_utils
 from nemo.utils import logging as nemo_logging
@@ -13,6 +14,50 @@ from omegaconf import open_dict
 
 nemo_logging.set_verbosity(nemo_logging.ERROR)
 numba_utils.set_numba_compat_strictness(False)
+
+
+_nemo_normalize_batch = nemo_features.normalize_batch
+
+
+def _normalize_batch_without_inplace(
+    x: torch.Tensor,
+    seq_len: torch.Tensor,
+    normalize_type: Any,
+) -> Any:
+    """Keep gradients through NeMo's per-feature normalization.
+
+    NeMo's implementation performs ``x_std += CONSTANT`` after ``x_std`` is
+    produced by ``torch.sqrt``. That in-place update invalidates the autograd
+    version counter when the ASR loss is backpropagated into the waveform.
+    """
+    if normalize_type != "per_feature":
+        return _nemo_normalize_batch(x, seq_len, normalize_type)
+
+    batch_size = x.shape[0]
+    max_time = x.shape[2]
+    if (
+        torch.cuda.is_available()
+        and not torch.cuda.is_current_stream_capturing()
+        and torch.any(seq_len == 1).item()
+    ):
+        raise ValueError(
+            "normalize_batch with `per_feature` normalize_type received a tensor of length 1. "
+            "This will result in torch.std() returning nan."
+        )
+    time_steps = torch.arange(max_time, device=x.device).unsqueeze(0).expand(batch_size, max_time)
+    valid_mask = time_steps < seq_len.unsqueeze(1)
+    x_mean_numerator = torch.where(valid_mask.unsqueeze(1), x, 0.0).sum(axis=2)
+    x_mean_denominator = valid_mask.sum(axis=1)
+    x_mean = x_mean_numerator / x_mean_denominator.unsqueeze(1)
+    x_std = torch.sqrt(
+        torch.sum(torch.where(valid_mask.unsqueeze(1), x - x_mean.unsqueeze(2), 0.0) ** 2, axis=2)
+        / (x_mean_denominator.unsqueeze(1) - 1.0)
+    )
+    x_std = x_std + nemo_features.CONSTANT
+    return (x - x_mean.unsqueeze(2)) / x_std.unsqueeze(2), x_mean, x_std
+
+
+nemo_features.normalize_batch = _normalize_batch_without_inplace
 
 
 def clip_encoded_time(

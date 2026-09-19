@@ -41,6 +41,6 @@ python -m src.data.utterances --corpus libritts
 python -m src.data.utterances --corpus vctk
 python -m src.data.noises --corpus demand
 python -m src.data.noise_configs
-python -m src.asr.timestamp_cache --splits train-clean-100 train-clean-360 dev-clean
-python -m src.asr.timestamp_cache --splits train-clean-100 train-clean-360 dev-clean --check
+python -m src.asr.timestamp_cache --splits train-clean-100 train-clean-360 dev-clean test-clean
+python -m src.asr.timestamp_cache --splits train-clean-100 train-clean-360 dev-clean test-clean --check
 ```
