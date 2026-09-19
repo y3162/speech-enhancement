@@ -46,7 +46,7 @@ def validate(
     totals: dict[str, float] = {}
     n = 0
     clean_list, enhanced_list = [], []
-    for clean_audio, noisy_audio, lengths in loader:
+    for clean_audio, noisy_audio, lengths, *_ in loader:
         clean_audio = clean_audio.to(device, non_blocking=True)
         noisy_audio = noisy_audio.to(device, non_blocking=True)
         clean = mag_pha_stft(clean_audio, stft)
@@ -129,7 +129,7 @@ def main() -> None:
         train_loader.sampler.set_epoch(epoch)  # type: ignore[union-attr]
         generator.train()
         discriminator.train()
-        for clean_audio, noisy_audio in train_loader:
+        for clean_audio, noisy_audio, *_ in train_loader:
             clean_audio = clean_audio.to(device, non_blocking=True)
             noisy_audio = noisy_audio.to(device, non_blocking=True)
             clean = mag_pha_stft(clean_audio, stft)

@@ -1,5 +1,8 @@
 """Train SEMamba++. torchrun --nproc_per_node=N -m src.se.se_mamba_pp.train --run_dir DIR [--config JSON]"""
 
+import math
+import time
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,9 +12,18 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 
-from src.se.common.dataset import build_datasets
+from src.asr.parakeet_tdt_0_6b_v2 import ParakeetTDT06BV2
+from src.asr.timestamp_cache import (
+    TimestampRecord,
+    crop_token_ids,
+    load_timestamp_cache,
+    missing_timestamp_keys,
+    require_timestamp_record,
+)
+from src.data.corpora.librispeech import utterance_key
+from src.se.common.dataset import AdditiveNoiseDataset, build_datasets
 from src.se.common.pesq import pesq_sum
-from src.se.common.stft import mag_pha_istft, mag_pha_stft
+from src.se.common.stft import Spec, mag_pha_istft, mag_pha_stft
 from src.se.common.training import (
     all_reduce_sum,
     build_loaders,
@@ -23,55 +35,127 @@ from src.se.common.training import (
     start_run,
     unpadded,
 )
-from src.se.se_mamba_pp.discriminator import SEMambaPPDiscriminator
-from src.se.se_mamba_pp.loss import MultiScaleMelSpectrogramLoss, discriminator_loss, generator_loss
+from src.se.se_mamba_pp.asr_guidance import ENCODER_LAYER
 from src.se.se_mamba_pp.model import SEMambaPP
 
 DEFAULT_CONFIG = Path(__file__).parent / "configs" / "default.json"
 torch.backends.cudnn.benchmark = True
 
 
+def _wav_lengths(audio: torch.Tensor, lengths: torch.Tensor | None = None) -> torch.Tensor:
+    if lengths is not None:
+        return lengths.to(device=audio.device, dtype=torch.int64)
+    return torch.full((audio.size(0),), audio.size(1), device=audio.device, dtype=torch.int64)
+
+
+def _guidance_features(
+    asr: ParakeetTDT06BV2,
+    audio: torch.Tensor,
+    lengths: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    encoded = asr.encode(audio, lengths, layers=(ENCODER_LAYER,))
+    return encoded.layer_outputs[ENCODER_LAYER].detach(), encoded.encoded_length
+
+
+def _tdt_targets_from_cache(
+    asr: ParakeetTDT06BV2,
+    cache: dict[str, TimestampRecord],
+    utterance_keys: Sequence[str],
+    crop_starts: torch.Tensor,
+    crop_ends: torch.Tensor,
+) -> tuple[list[str], float, float, int]:
+    texts: list[str] = []
+    lookup_s = 0.0
+    slice_s = 0.0
+    empty = 0
+    for key, crop_start, crop_end in zip(utterance_keys, crop_starts.tolist(), crop_ends.tolist()):
+        t0 = time.perf_counter()
+        record = require_timestamp_record(cache, key)
+        lookup_s += time.perf_counter() - t0
+        t0 = time.perf_counter()
+        token_ids = crop_token_ids(record, int(crop_start), int(crop_end))
+        slice_s += time.perf_counter() - t0
+        text = asr.ids_to_text(token_ids)
+        empty += int(text == "")
+        texts.append(text)
+    return texts, lookup_s, slice_s, empty
+
+
+def _grad_norm(module: nn.Module) -> float:
+    total = 0.0
+    for parameter in module.parameters():
+        if parameter.grad is not None:
+            total += float(parameter.grad.detach().float().norm().item() ** 2)
+    return total**0.5
+
+
+def _require_cache_coverage(cache: dict[str, TimestampRecord], dataset: AdditiveNoiseDataset, name: str) -> None:
+    keys = [utterance_key(utterance) for utterance in dataset.utterances]
+    missing = missing_timestamp_keys(cache, keys)
+    if missing:
+        shown = ", ".join(missing[:5])
+        raise KeyError(f"timestamp cache missing {len(missing)} {name} keys, e.g. {shown}")
+
+
+def _forward_generator(
+    generator: nn.Module,
+    noisy_mag: torch.Tensor,
+    noisy_pha: torch.Tensor,
+    asr_hidden: torch.Tensor | None,
+    asr_lengths: torch.Tensor | None,
+) -> Spec:
+    if asr_hidden is None:
+        return generator(noisy_mag, noisy_pha)
+    return generator(noisy_mag, noisy_pha, asr_hidden, asr_lengths)
+
+
 @torch.no_grad()
 def validate(
     generator: nn.Module,
-    discriminator: nn.Module,
-    mel_loss: MultiScaleMelSpectrogramLoss,
+    asr: ParakeetTDT06BV2,
+    cache: dict[str, TimestampRecord],
     loader: DataLoader,
     cfg: SimpleNamespace,
     device: torch.device,
+    guidance: bool,
 ) -> dict[str, float]:
     generator.eval()
-    discriminator.eval()
     stft, sample_rate = cfg.data.stft, cfg.data.sampling_rate
-    totals: dict[str, float] = {}
+    max_val_batches = getattr(cfg.train, "max_val_batches", None)
+    total_tdt = 0.0
     n = 0
+    empty = 0
     clean_list, enhanced_list = [], []
-    for clean_audio, noisy_audio, lengths in loader:
+    for batch_index, (clean_audio, noisy_audio, lengths, utterance_keys, crop_starts, crop_ends) in enumerate(loader):
+        if max_val_batches is not None and batch_index >= int(max_val_batches):
+            break
         clean_audio = clean_audio.to(device, non_blocking=True)
         noisy_audio = noisy_audio.to(device, non_blocking=True)
-        clean = mag_pha_stft(clean_audio, stft)
+        lengths = lengths.to(device, non_blocking=True)
         noisy = mag_pha_stft(noisy_audio, stft)
-        gen = generator(noisy.mag, noisy.pha)
+        asr_hidden, asr_lengths = (None, None)
+        if guidance:
+            asr_hidden, asr_lengths = _guidance_features(asr, noisy_audio, lengths)
+        gen = _forward_generator(generator, noisy.mag, noisy.pha, asr_hidden, asr_lengths)
         enhanced_audio = mag_pha_istft(gen.mag, gen.pha, stft, length=clean_audio.size(1))
-        gen_hat = mag_pha_stft(enhanced_audio, stft, eps=1e-10)
-        d = discriminator(clean_audio.unsqueeze(1), enhanced_audio.unsqueeze(1))
-        mel = mel_loss(clean_audio.unsqueeze(1), enhanced_audio.unsqueeze(1))
-        losses = generator_loss(clean, gen, gen_hat, d, mel, cfg.train.loss, stft.n_fft)
+        texts, _, _, empty_n = _tdt_targets_from_cache(asr, cache, utterance_keys, crop_starts, crop_ends)
+        tdt = asr.loss(enhanced_audio, lengths, texts)
         batch = clean_audio.size(0)
         n += batch
-        for name, value in losses.items():
-            totals[name] = totals.get(name, 0.0) + float(value) * batch
+        empty += empty_n
+        total_tdt += float(tdt.sum())
         batch_clean, batch_enhanced = unpadded(clean_audio, enhanced_audio, lengths)
         clean_list.extend(batch_clean)
         enhanced_list.extend(batch_enhanced)
 
     score_sum, score_n = pesq_sum(clean_list, enhanced_list, sample_rate, cfg.train.pesq_num_workers)
     n = all_reduce_sum(n, device)
-    metrics = {"pesq": all_reduce_sum(score_sum, device) / max(all_reduce_sum(score_n, device), 1.0)}
-    for name, value in totals.items():
-        metrics[name] = all_reduce_sum(value, device) / max(n, 1.0)
+    metrics = {
+        "pesq": all_reduce_sum(score_sum, device) / max(all_reduce_sum(score_n, device), 1.0),
+        "tdt": all_reduce_sum(total_tdt, device) / max(n, 1.0),
+        "empty_target": all_reduce_sum(float(empty), device) / max(n, 1.0),
+    }
     generator.train()
-    discriminator.train()
     return metrics
 
 
@@ -80,99 +164,111 @@ def main() -> None:
     device, rank = init_distributed()
     seed_everything(cfg.train.seed)
     writer = start_run(run_dir, cfg, rank)
-    stft, sample_rate, weights, optim_cfg = (
-        cfg.data.stft,
-        cfg.data.sampling_rate,
-        cfg.train.loss,
-        cfg.train.optim,
-    )
+    stft, weights, optim_cfg = cfg.data.stft, cfg.train.loss, cfg.train.optim
+    guidance = int(getattr(cfg.model, "asr_guidance_dim", 0) or 0) > 0
+    max_steps = getattr(cfg.train, "max_steps", None)
+
+    trainset, validset = build_datasets(cfg)
+    timestamp_cache = load_timestamp_cache(Path(cfg.data.timestamp_cache))
+    _require_cache_coverage(timestamp_cache, trainset, "train")
+    _require_cache_coverage(timestamp_cache, validset, "validation")
 
     generator = SEMambaPP(cfg.model, stft.n_fft).to(device)
-    discriminator = SEMambaPPDiscriminator().to(device)
-    mel_loss = MultiScaleMelSpectrogramLoss(sample_rate)
+    asr = ParakeetTDT06BV2().to(device)
+    asr.eval()
+    for parameter in asr.parameters():
+        parameter.requires_grad_(False)
     optim_g = torch.optim.AdamW(
         generator.parameters(),
         optim_cfg.learning_rate,
         betas=(optim_cfg.adam_b1, optim_cfg.adam_b2),
     )
-    optim_d = torch.optim.AdamW(
-        discriminator.parameters(),
-        optim_cfg.learning_rate,
-        betas=(optim_cfg.adam_b1, optim_cfg.adam_b2),
-    )
     sched_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=optim_cfg.lr_decay)
-    sched_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=optim_cfg.lr_decay)
 
     start_epoch, steps, best_pesq = 0, 0, 0.0
     state = load_checkpoint(run_dir, device)
     if state is not None:
         generator.load_state_dict(state["generator"])
-        discriminator.load_state_dict(state["discriminator"])
         optim_g.load_state_dict(state["optim_g"])
-        optim_d.load_state_dict(state["optim_d"])
         sched_g.load_state_dict(state["sched_g"])
-        sched_d.load_state_dict(state["sched_d"])
         start_epoch, steps, best_pesq = state["epoch"] + 1, state["steps"], state["best_pesq"]
         if rank == 0:
             print(f"Resumed from epoch {start_epoch} (step {steps}, best_pesq={best_pesq:.3f})", flush=True)
 
     generator = DDP(generator, device_ids=[device.index])
-    discriminator = DDP(discriminator, device_ids=[device.index])
-    trainset, validset = build_datasets(cfg)
     train_loader, valid_loader = build_loaders(trainset, validset, cfg.train)
     if rank == 0:
         print(
             f"SEMamba++: {sum(p.numel() for p in generator.parameters()) / 1e6:.3f}M params, "
-            f"{dist.get_world_size()} GPU(s) x batch {cfg.train.batch_size}",
+            f"{dist.get_world_size()} GPU(s) x batch {cfg.train.batch_size}, "
+            f"timestamp_cache={cfg.data.timestamp_cache} entries={len(timestamp_cache)}",
             flush=True,
         )
 
+    empty_n = 0
+    seen_n = 0
+    stop = False
     for epoch in range(start_epoch, cfg.train.epochs):
         train_loader.sampler.set_epoch(epoch)  # type: ignore[union-attr]
         generator.train()
-        discriminator.train()
-        for clean_audio, noisy_audio in train_loader:
+        for clean_audio, noisy_audio, utterance_keys, crop_starts, crop_ends in train_loader:
+            step_t0 = time.perf_counter()
             clean_audio = clean_audio.to(device, non_blocking=True)
             noisy_audio = noisy_audio.to(device, non_blocking=True)
-            clean = mag_pha_stft(clean_audio, stft)
+            wav_lengths = _wav_lengths(clean_audio)
             noisy = mag_pha_stft(noisy_audio, stft)
 
-            # Generator forward: mag/phase -> waveform -> re-STFT (consistency)
-            gen = generator(noisy.mag, noisy.pha)
+            asr_hidden, asr_lengths = (None, None)
+            texts, lookup_s, slice_s, empty_batch = _tdt_targets_from_cache(
+                asr,
+                timestamp_cache,
+                utterance_keys,
+                crop_starts,
+                crop_ends,
+            )
+            empty_n += empty_batch
+            seen_n += clean_audio.size(0)
+            if guidance:
+                with torch.no_grad():
+                    asr_hidden, asr_lengths = _guidance_features(asr, noisy_audio, wav_lengths)
+
+            gen = _forward_generator(generator, noisy.mag, noisy.pha, asr_hidden, asr_lengths)
             enhanced_audio = mag_pha_istft(gen.mag, gen.pha, stft)
-            gen_hat = mag_pha_stft(enhanced_audio, stft, eps=1e-10)
+            losses = {"tdt": weights.tdt * asr.loss(enhanced_audio, wav_lengths, texts).mean()}
 
-            # Discriminator (LSGAN): CQT and multi-resolution discriminators on clean / generated waveforms
-            optim_d.zero_grad(set_to_none=True)
-            d = discriminator(clean_audio.unsqueeze(1), enhanced_audio.detach().unsqueeze(1))
-            loss_d = discriminator_loss(d)
-            loss_d["total"].backward()
-            optim_d.step()
-
-            # Generator: adversarial and feature-matching from the updated discriminator, plus mel and spectral losses
             optim_g.zero_grad(set_to_none=True)
-            d = discriminator(clean_audio.unsqueeze(1), enhanced_audio.unsqueeze(1))
-            mel = mel_loss(clean_audio.unsqueeze(1), enhanced_audio.unsqueeze(1))
-            losses = generator_loss(clean, gen, gen_hat, d, mel, weights, stft.n_fft)
-            losses["total"].backward()
+            losses["tdt"].backward()
             optim_g.step()
 
             steps += 1
             if rank == 0 and steps % cfg.train.log_interval == 0:
+                step_s = time.perf_counter() - step_t0
+                tdt_val = float(losses["tdt"])
+                gen_mod = generator.module
+                proj, fuse = gen_mod.asr_proj, gen_mod.asr_fuse
+                asr_has_grad = any(parameter.grad is not None for parameter in asr.parameters())
                 print(
-                    f"epoch {epoch + 1} step {steps}: "
-                    f"gen={float(losses['total']):.3f} disc={float(loss_d['total']):.3f}",
+                    f"epoch {epoch + 1} step {steps}: tdt={tdt_val:.3f} finite={math.isfinite(tdt_val)} "
+                    f"empty={empty_n}/{seen_n} lookup_ms={lookup_s * 1000:.3f} "
+                    f"slice_ms={slice_s * 1000:.3f} step_s={step_s:.3f} "
+                    f"se_grad={_grad_norm(gen_mod):.4g} "
+                    f"proj_grad={_grad_norm(proj) if proj is not None else 0.0:.4g} "
+                    f"fuse_grad={_grad_norm(fuse) if fuse is not None else 0.0:.4g} "
+                    f"asr_grad={int(asr_has_grad)} "
+                    f"vram_mb={torch.cuda.max_memory_allocated(device) / (1024**2):.0f}",
                     flush=True,
                 )
-                log_scalars(writer, "train", {**losses, **{f"disc_{k}": v for k, v in loss_d.items()}}, steps)
+                log_scalars(writer, "train", losses, steps)
+            if max_steps is not None and steps >= int(max_steps):
+                stop = True
+                break
 
-        metrics = validate(generator, discriminator, mel_loss, valid_loader, cfg, device)
+        metrics = validate(generator, asr, timestamp_cache, valid_loader, cfg, device, guidance)
         sched_g.step()
-        sched_d.step()
         if rank == 0:
             print(
                 f"validation epoch {epoch + 1}/{cfg.train.epochs}: "
-                f"PESQ={metrics['pesq']:.3f} gen={metrics['total']:.3f}",
+                f"PESQ={metrics['pesq']:.3f} tdt={metrics['tdt']:.3f} empty={metrics['empty_target']:.4f}",
                 flush=True,
             )
             log_scalars(writer, "valid", metrics, epoch + 1)
@@ -182,11 +278,8 @@ def main() -> None:
             torch.save(
                 {
                     "generator": generator.module.state_dict(),
-                    "discriminator": discriminator.module.state_dict(),
                     "optim_g": optim_g.state_dict(),
-                    "optim_d": optim_d.state_dict(),
                     "sched_g": sched_g.state_dict(),
-                    "sched_d": sched_d.state_dict(),
                     "epoch": epoch,
                     "steps": steps,
                     "best_pesq": best_pesq,
@@ -194,6 +287,8 @@ def main() -> None:
                 run_dir / "latest.pt",
             )
         dist.barrier()
+        if stop:
+            break
 
     if writer is not None:
         writer.close()

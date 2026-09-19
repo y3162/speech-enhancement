@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from src.data.audio import read_audio_segment, read_audio_stream_info
-from src.data.noise import AdditiveStep, generate, parse_pipeline
+from src.data.noise import AdditiveStep, _native_frame_count, generate, parse_pipeline
 from src.data.schema import NoiseConfig
 from tests.helpers import write_audio
 
@@ -91,6 +91,39 @@ class GenerateNoiseTest(unittest.TestCase):
         mixed = clean + noise
         self.assertFalse(np.allclose(mixed, noise))
         self.assertFalse(np.allclose(mixed, clean))
+
+    def test_mismatched_rate_is_read_in_native_frames_then_resampled(self) -> None:
+        orig_sr, target_sr = 48000, SAMPLE_RATE
+        native_frames = 48000
+        clean_frames = 16000
+        source = np.sin(2 * np.pi * 220.0 * np.arange(native_frames) / orig_sr).astype(np.float32).reshape(-1, 1)
+        write_audio(self.noise_path, source, orig_sr)
+        step = AdditiveStep(
+            seed=3,
+            snr_db=5.0,
+            start_ratio=0.0,
+            end_ratio=1.0,
+            audio_path=self.noise_path,
+            sample_rate=orig_sr,
+            frames=native_frames,
+        )
+        clean = _ramp(clean_frames)
+        noise = generate(clean, target_sr, (step,))
+        self.assertEqual(noise.shape, clean.shape)
+        self.assertEqual(noise.dtype, np.float32)
+        self.assertTrue(np.isfinite(noise).all())
+        self.assertEqual(_native_frame_count(clean_frames, orig_sr, target_sr), native_frames)
+        self.assertAlmostEqual(native_frames / orig_sr, clean_frames / target_sr)
+        mixed = clean + noise
+        self.assertEqual(mixed.shape, clean.shape)
+        self.assertTrue(np.isfinite(mixed).all())
+        self.assertFalse(np.allclose(mixed, clean))
+
+        rng = np.random.default_rng(3)
+        start = int(rng.integers(0, native_frames))
+        raw_native = read_audio_segment(self.noise_path, start, native_frames, 0, native_frames)
+        self.assertEqual(raw_native.shape[0], native_frames)
+        self.assertGreater(float(np.sqrt(np.mean(np.square(noise)))), 0.0)
 
     def test_unsupported_version_raises(self) -> None:
         config = NoiseConfig(json={"version": "2.0", "pipeline": []}, split="train")

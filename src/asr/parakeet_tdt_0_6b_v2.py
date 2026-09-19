@@ -15,6 +15,21 @@ nemo_logging.set_verbosity(nemo_logging.ERROR)
 numba_utils.set_numba_compat_strictness(False)
 
 
+def clip_encoded_time(
+    encoded: torch.Tensor,
+    encoded_length: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Make encoded T equal max(encoded_length) so TDT/RNNT length checks pass."""
+    if encoded.ndim != 3:
+        raise ValueError(f"encoded must be [B, D, T], got {tuple(encoded.shape)}")
+    time = encoded.size(-1)
+    clipped_length = encoded_length.to(dtype=torch.int64).clamp(min=0, max=time)
+    cut = int(clipped_length.max().item()) if clipped_length.numel() else 0
+    if time != cut:
+        encoded = encoded[:, :, :cut]
+    return encoded, clipped_length
+
+
 @dataclass(frozen=True)
 class Token:
     token_id: int
@@ -167,6 +182,11 @@ class ParakeetTDT06BV2(nn.Module):
             for handle in handles:
                 handle.remove()
         encoded_length_valid = encoded_length_valid.to(dtype=torch.int64)
+        encoded_valid, encoded_length_valid = clip_encoded_time(encoded_valid, encoded_length_valid)
+        cut = encoded_valid.size(-1)
+        for layer_index, layer_tensor in list(layer_outputs_valid.items()):
+            if layer_tensor.size(-1) != cut:
+                layer_outputs_valid[layer_index] = layer_tensor[:, :, :cut]
         if idx is None:
             return EncodeResult(
                 encoded=encoded_valid,
@@ -291,6 +311,11 @@ class ParakeetTDT06BV2(nn.Module):
         with torch.no_grad():
             encoded = self.encode(waveforms, lengths)
         return self.recognize_encoded(encoded.encoded, encoded.encoded_length)
+
+    def ids_to_text(self, token_ids: Sequence[int]) -> str:
+        if not token_ids:
+            return ""
+        return self.model.tokenizer.ids_to_text(list(token_ids))
 
     def loss(
         self,

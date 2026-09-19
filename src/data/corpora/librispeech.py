@@ -7,6 +7,15 @@ from ..schema import Utterance
 from .scan import iter_in_threads, iter_speaker_chapter_transcripts
 
 
+def utterance_key(utterance: Utterance) -> str:
+    """LibriSpeech trans.txt id: speaker-chapter-utterance. Unique across the corpus; the last field alone is not."""
+    if utterance.corpus != "LibriSpeech":
+        raise ValueError(f"utterance_key expects corpus='LibriSpeech', got {utterance.corpus!r}")
+    if utterance.speaker_id is None or utterance.chapter_id is None or utterance.utterance_id is None:
+        raise ValueError(f"LibriSpeech utterance is missing speaker/chapter/id: {utterance.audio_path}")
+    return f"{utterance.speaker_id}-{utterance.chapter_id}-{utterance.utterance_id}"
+
+
 def utterance_iterator() -> Iterator[Utterance]:
     return iter_in_threads(
         iter_speaker_chapter_transcripts(

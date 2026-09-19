@@ -35,7 +35,10 @@ class ConfigFileTest(unittest.TestCase):
                 # Old nested train.env / top-level checkpoint_root must stay gone (resume writes flat train).
                 self.assertFalse(hasattr(cfg.train, "env"))
                 self.assertFalse(hasattr(cfg, "checkpoint_root"))
-                self.assertIn("consistency", vars(cfg.train.loss))
+                if path.parent.parent.name == "se_mamba_pp":
+                    self.assertIn("tdt", vars(cfg.train.loss))
+                else:
+                    self.assertIn("consistency", vars(cfg.train.loss))
 
 
 class ParseArgsTest(unittest.TestCase):

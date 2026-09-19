@@ -2,7 +2,7 @@ import os
 import random
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import torch
@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from src.data.audio import read_audio_segment
+from src.data.corpora.librispeech import utterance_key
 from src.data.db import Connection, fetch_noise_configs, fetch_noises, fetch_utterances, metadata_path
 from src.data.noise import AdditiveStep, generate, parse_pipeline
 from src.data.schema import Utterance
@@ -65,35 +66,48 @@ def _normalize_pair(
     raise ValueError(f"unsupported normalize {kind!r}; expected 'energy' or 'peak'")
 
 
+class AudioPair(NamedTuple):
+    clean: torch.Tensor
+    noisy: torch.Tensor
+    utterance_key: str
+    crop_start: int
+    crop_end: int
+
+
 def _crop_or_pad(
     clean: torch.Tensor,
     noisy: torch.Tensor,
     segment_size: int,
     rng: Any,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, int, int]:
     length = clean.size(0)
     if length == segment_size:
-        return clean, noisy
+        return clean, noisy, 0, length
     if length > segment_size:
         start = rng.randint(0, length - segment_size)
         end = start + segment_size
-        return clean[start:end], noisy[start:end]
+        return clean[start:end], noisy[start:end], start, end
     pad = (0, segment_size - length)
-    return F.pad(clean, pad), F.pad(noisy, pad)
+    return F.pad(clean, pad), F.pad(noisy, pad), 0, length
 
 
 def pad_collate(
-    batch: list[tuple[torch.Tensor, torch.Tensor]],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    clean_list, noisy_list = zip(*batch)
-    lengths = torch.tensor([int(clean.size(0)) for clean in clean_list], dtype=torch.long)
+    batch: list[AudioPair],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[str, ...], torch.Tensor, torch.Tensor]:
+    lengths = torch.tensor([int(sample.clean.size(0)) for sample in batch], dtype=torch.long)
     max_len = int(lengths.max().item())
-    clean_batch = clean_list[0].new_zeros((len(batch), max_len))
-    noisy_batch = noisy_list[0].new_zeros((len(batch), max_len))
-    for i, (clean, noisy) in enumerate(zip(clean_list, noisy_list)):
-        clean_batch[i, : clean.size(0)] = clean
-        noisy_batch[i, : noisy.size(0)] = noisy
-    return clean_batch, noisy_batch, lengths
+    clean_batch = batch[0].clean.new_zeros((len(batch), max_len))
+    noisy_batch = batch[0].noisy.new_zeros((len(batch), max_len))
+    crop_starts = torch.zeros(len(batch), dtype=torch.long)
+    crop_ends = torch.zeros(len(batch), dtype=torch.long)
+    keys: list[str] = []
+    for i, sample in enumerate(batch):
+        clean_batch[i, : sample.clean.size(0)] = sample.clean
+        noisy_batch[i, : sample.noisy.size(0)] = sample.noisy
+        keys.append(sample.utterance_key)
+        crop_starts[i] = sample.crop_start
+        crop_ends[i] = sample.crop_end
+    return clean_batch, noisy_batch, lengths, tuple(keys), crop_starts, crop_ends
 
 
 class AdditiveNoiseDataset(Dataset):
@@ -128,7 +142,7 @@ class AdditiveNoiseDataset(Dataset):
     def __len__(self) -> int:
         return len(self.utterances)
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index: int) -> AudioPair:
         utterance = self.utterances[index]
         if utterance.sample_rate is None or utterance.sample_rate != self.sampling_rate:
             raise ValueError(
@@ -150,12 +164,14 @@ class AdditiveNoiseDataset(Dataset):
         noisy = torch.from_numpy(_to_mono_waveform(clean_2d + noise_2d, utterance.audio_path))
         clean, noisy = _normalize_pair(clean, noisy, self.normalize)
         if self.crop:
-            clean, noisy = _crop_or_pad(clean, noisy, self.segment_size, rng)
+            clean, noisy, crop_start, crop_end = _crop_or_pad(clean, noisy, self.segment_size, rng)
+        else:
+            crop_start, crop_end = 0, int(clean.size(0))
         if self.pcs400:
             from src.se.common.pcs import cal_pcs
 
             clean = torch.from_numpy(np.asarray(cal_pcs(clean.numpy()), dtype=np.float32))
-        return clean, noisy
+        return AudioPair(clean, noisy, utterance_key(utterance), crop_start, crop_end)
 
 
 def build_datasets(cfg: SimpleNamespace) -> tuple[AdditiveNoiseDataset, AdditiveNoiseDataset]:

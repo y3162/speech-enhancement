@@ -91,7 +91,7 @@ class SeMambaPPLossTest(unittest.TestCase):
         scores = [torch.rand(2, 5) for _ in range(3)]
         fmaps = [[torch.rand(2, 4, 3) for _ in range(2)] for _ in range(3)]
         d = DiscriminatorOutputs(scores, scores, fmaps, fmaps, scores, scores, fmaps, fmaps)
-        weights = load_config(se_config("se_mamba_pp")).train.loss
+        weights = SimpleNamespace(magnitude=0.9, phase=0.3, complex=0.1, consistency=0.1, adv_g=1.0, fm_g=1.0, mel=0.1)
         losses = generator_loss(_spec(), _spec(), _spec(), d, torch.tensor(0.5), weights, 400)
         self.assertEqual(set(losses), SEMAMBA_PP_KEYS)
         self.assertNotIn("time", losses)

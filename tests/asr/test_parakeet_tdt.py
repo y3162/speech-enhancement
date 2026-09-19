@@ -143,6 +143,7 @@ class ParakeetEncodeTest(_ParakeetCase):
         last = max(encoded.layer_outputs)
         self.assertEqual(tuple(encoded.layer_outputs[last].shape), tuple(encoded.encoded.shape))
         self.assertEqual(tuple(encoded.layer_outputs[0].shape), tuple(encoded.encoded.shape))
+        self.assertEqual(encoded.encoded.size(-1), int(encoded.encoded_length.max()))
 
         recognized = MODEL.recognize_encoded(encoded.encoded, encoded.encoded_length)
         self.assertEqual(recognized[0].encoded_length, int(encoded.encoded_length[0]))
@@ -158,6 +159,27 @@ class ParakeetEncodeTest(_ParakeetCase):
 
         with self.assertRaises(ValueError):
             MODEL.encode(wav.detach(), lengths, layers=(10**6,))
+
+    def test_clip_encoded_time_trims_extra_frame(self) -> None:
+        from src.asr.parakeet_tdt_0_6b_v2 import clip_encoded_time
+
+        clipped, clipped_length = clip_encoded_time(torch.zeros(1, 4, 164), torch.tensor([163]))
+        self.assertEqual(clipped.size(-1), 163)
+        self.assertEqual(int(clipped_length[0]), 163)
+        clipped, clipped_length = clip_encoded_time(torch.zeros(1, 4, 163), torch.tensor([164]))
+        self.assertEqual(clipped.size(-1), 163)
+        self.assertEqual(int(clipped_length[0]), 163)
+
+    def test_encode_time_matches_reported_length(self) -> None:
+        MODEL.eval()
+        for samples in (16000, 48000, 208640):
+            wav, lengths = _waveforms(batch=1, samples=samples)
+            encoded = MODEL.encode(wav, lengths, layers=(-1,))
+            self.assertEqual(encoded.encoded.size(-1), int(encoded.encoded_length.max()))
+            last = max(encoded.layer_outputs)
+            self.assertEqual(encoded.layer_outputs[last].size(-1), encoded.encoded.size(-1))
+            nll = MODEL.loss(wav, lengths, ["hello"])
+            self.assertTrue(torch.isfinite(nll).all())
 
     def test_zero_length_encode_scatters_and_backward(self) -> None:
         MODEL.eval()

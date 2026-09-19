@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from scipy.signal import resample_poly
 
 from .audio import read_audio_segment
 from .schema import Noise, NoiseConfig
@@ -79,6 +80,42 @@ def parse_pipeline(
     return tuple(steps)
 
 
+def _native_frame_count(n_out: int, orig_sr: int, target_sr: int) -> int:
+    if orig_sr == target_sr:
+        return n_out
+    return max(int(round(n_out * orig_sr / target_sr)), 1)
+
+
+def _resample_to_length(
+    waveform: np.ndarray,
+    orig_sr: int,
+    target_sr: int,
+    n_out: int,
+) -> np.ndarray:
+    if orig_sr < 1 or target_sr < 1:
+        raise ValueError(f"invalid sample rates orig_sr={orig_sr} target_sr={target_sr}")
+    if orig_sr == target_sr:
+        if waveform.shape[0] != n_out:
+            raise ValueError(f"waveform length {waveform.shape[0]} does not match {n_out}")
+        return waveform
+    gcd = math.gcd(orig_sr, target_sr)
+    resampled = resample_poly(
+        waveform.astype(np.float64, copy=False),
+        target_sr // gcd,
+        orig_sr // gcd,
+        axis=0,
+    )
+    resampled = np.asarray(resampled, dtype=np.float32)
+    if resampled.ndim == 1:
+        resampled = resampled.reshape(-1, 1)
+    if resampled.shape[0] == n_out:
+        return resampled
+    if resampled.shape[0] > n_out:
+        return resampled[:n_out]
+    pad = np.zeros((n_out - resampled.shape[0], resampled.shape[1]), dtype=np.float32)
+    return np.concatenate([resampled, pad], axis=0)
+
+
 def generate(
     clean: np.ndarray,
     sample_rate: int,
@@ -86,10 +123,12 @@ def generate(
 ) -> np.ndarray:
     if clean.ndim != 2 or clean.shape[0] < 1 or clean.shape[1] < 1:
         raise ValueError(f"clean must be a non-empty 2D array (frames, channels), got shape {clean.shape}")
+    if sample_rate < 1:
+        raise ValueError(f"invalid sample_rate {sample_rate}")
     out = np.zeros(clean.shape, dtype=np.float64)
     for step in steps:
-        if step.sample_rate != sample_rate:
-            raise ValueError(f"{step.audio_path} sample_rate {step.sample_rate} does not match {sample_rate}")
+        if step.sample_rate < 1:
+            raise ValueError(f"{step.audio_path} has invalid sample_rate {step.sample_rate}")
         if step.frames < 1:
             raise ValueError(f"{step.audio_path} has invalid frames: {step.frames}")
         range_start = math.floor(step.start_ratio * step.frames)
@@ -99,10 +138,11 @@ def generate(
             raise ValueError(f"{step.audio_path} has empty valid range [{range_start}, {range_end})")
         rng = np.random.default_rng(step.seed)
         start_frame = int(rng.integers(0, range_len))
+        native_frames = _native_frame_count(clean.shape[0], step.sample_rate, sample_rate)
         noise = read_audio_segment(
             step.audio_path,
             start_frame,
-            clean.shape[0],
+            native_frames,
             range_start,
             range_end,
         )
@@ -110,6 +150,7 @@ def generate(
             raise ValueError(
                 f"{step.audio_path} channels {noise.shape[1]} do not match clean channels {clean.shape[1]}"
             )
+        noise = _resample_to_length(noise, step.sample_rate, sample_rate, clean.shape[0])
         out += _scale_to_snr(clean, noise, step.snr_db)
     return out.astype(np.float32)
 

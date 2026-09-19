@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from src.data.audio import read_audio_segment
+from src.data.corpora.librispeech import utterance_key
 from src.data.db import Connection, fetch_noise_configs, fetch_noises, fetch_utterances, import_rows, metadata_path
 from src.data.noise import generate, parse_pipeline
 from src.data.schema import (
@@ -19,6 +20,7 @@ from src.data.schema import (
 )
 from src.se.common.dataset import (
     AdditiveNoiseDataset,
+    AudioPair,
     _crop_or_pad,
     _noise_split,
     _normalize_pair,
@@ -127,6 +129,27 @@ def _seed_database(corpora: Path, db_path: Path) -> None:
     )
 
 
+class UtteranceKeyTest(unittest.TestCase):
+    def test_uses_speaker_chapter_utterance_not_short_id(self) -> None:
+        first = Utterance(
+            corpus="LibriSpeech",
+            audio_path=Path("a.flac"),
+            speaker_id="6078",
+            chapter_id="54013",
+            utterance_id="0037",
+        )
+        second = Utterance(
+            corpus="LibriSpeech",
+            audio_path=Path("b.flac"),
+            speaker_id="1234",
+            chapter_id="56789",
+            utterance_id="0037",
+        )
+        self.assertEqual(utterance_key(first), "6078-54013-0037")
+        self.assertNotEqual(utterance_key(first), utterance_key(second))
+        self.assertNotEqual(utterance_key(first), "0037")
+
+
 class NoiseSplitTest(unittest.TestCase):
     def test_train_dev_test_prefixes(self) -> None:
         self.assertEqual(_noise_split(["train-clean-100", "train-clean-360"]), "train")
@@ -166,29 +189,46 @@ class NormalizePairTest(unittest.TestCase):
 class CropOrPadTest(unittest.TestCase):
     def test_crop_pad_and_identity_length(self) -> None:
         rng = random.Random(0)
-        cropped_clean, cropped_noisy = _crop_or_pad(torch.arange(10.0), torch.arange(10.0) + 1, 6, rng)
+        cropped_clean, cropped_noisy, crop_start, crop_end = _crop_or_pad(
+            torch.arange(10.0), torch.arange(10.0) + 1, 6, rng
+        )
+        expected_start = random.Random(0).randint(0, 4)
         self.assertEqual(tuple(cropped_clean.shape), (6,))
         self.assertEqual(tuple(cropped_noisy.shape), (6,))
-        padded_clean, padded_noisy = _crop_or_pad(torch.arange(4.0), torch.arange(4.0) + 1, 6, random.Random(0))
+        self.assertEqual(crop_start, expected_start)
+        self.assertEqual(crop_end, expected_start + 6)
+        self.assertTrue(torch.equal(cropped_clean, torch.arange(10.0)[crop_start:crop_end]))
+        padded_clean, padded_noisy, pad_start, pad_end = _crop_or_pad(
+            torch.arange(4.0), torch.arange(4.0) + 1, 6, random.Random(0)
+        )
         self.assertEqual(tuple(padded_clean.shape), (6,))
         self.assertTrue(torch.equal(padded_clean[:4], torch.arange(4.0)))
         self.assertTrue(torch.equal(padded_noisy[4:], torch.zeros(2)))
-        equal_clean, equal_noisy = _crop_or_pad(torch.arange(6.0), torch.arange(6.0) + 1, 6, random.Random(0))
+        self.assertEqual(pad_start, 0)
+        self.assertEqual(pad_end, 4)
+        equal_clean, equal_noisy, equal_start, equal_end = _crop_or_pad(
+            torch.arange(6.0), torch.arange(6.0) + 1, 6, random.Random(0)
+        )
         self.assertTrue(torch.equal(equal_clean, torch.arange(6.0)))
         self.assertTrue(torch.equal(equal_noisy, torch.arange(6.0) + 1))
+        self.assertEqual(equal_start, 0)
+        self.assertEqual(equal_end, 6)
 
 
 class PadCollateTest(unittest.TestCase):
-    def test_pads_to_max_length(self) -> None:
+    def test_pads_to_max_length_and_keeps_crop_metadata(self) -> None:
         batch = [
-            (torch.arange(3.0), torch.arange(3.0) + 10),
-            (torch.arange(5.0), torch.arange(5.0) + 10),
+            AudioPair(torch.arange(3.0), torch.arange(3.0) + 10, "1234-56789-0000", 0, 3),
+            AudioPair(torch.arange(5.0), torch.arange(5.0) + 10, "1234-56789-0001", 2, 7),
         ]
-        clean, noisy, lengths = pad_collate(batch)
+        clean, noisy, lengths, keys, crop_starts, crop_ends = pad_collate(batch)
         self.assertEqual(tuple(clean.shape), (2, 5))
         self.assertEqual(tuple(noisy.shape), (2, 5))
         self.assertTrue(torch.equal(lengths, torch.tensor([3, 5])))
         self.assertTrue(torch.equal(clean[0, 3:], torch.zeros(2)))
+        self.assertEqual(keys, ("1234-56789-0000", "1234-56789-0001"))
+        self.assertTrue(torch.equal(crop_starts, torch.tensor([0, 2])))
+        self.assertTrue(torch.equal(crop_ends, torch.tensor([3, 7])))
 
 
 class BuildDatasetsErrorsTest(unittest.TestCase):
@@ -237,10 +277,16 @@ class AdditiveNoiseDatasetTest(unittest.TestCase):
 
     def test_getitem_is_mono_and_noisy_is_normalized_clean_plus_noise(self) -> None:
         dataset = self._dataset()
-        clean, noisy = dataset[0]
+        sample = dataset[0]
+        clean, noisy = sample.clean, sample.noisy
         self.assertEqual(tuple(clean.shape), (N_SAMPLES,))
         self.assertEqual(tuple(noisy.shape), (N_SAMPLES,))
         utterance = dataset.utterances[0]
+        self.assertEqual(sample.utterance_key, utterance_key(utterance))
+        self.assertEqual(sample.utterance_key, "1234-56789-0000")
+        self.assertNotEqual(sample.utterance_key, utterance.utterance_id)
+        self.assertEqual(sample.crop_start, 0)
+        self.assertEqual(sample.crop_end, N_SAMPLES)
         clean_2d = read_audio_segment(utterance.audio_path, 0, int(utterance.frames))
         noise_2d = generate(clean_2d, SAMPLE_RATE, dataset.noise_pipelines[0])
         raw_clean = torch.from_numpy(np.ascontiguousarray(clean_2d[:, 0]))
@@ -253,8 +299,11 @@ class AdditiveNoiseDatasetTest(unittest.TestCase):
     def test_seed_makes_getitem_deterministic(self) -> None:
         first = self._dataset(seed=42)[0]
         second = self._dataset(seed=42)[0]
-        self.assertTrue(torch.equal(first[0], second[0]))
-        self.assertTrue(torch.equal(first[1], second[1]))
+        self.assertTrue(torch.equal(first.clean, second.clean))
+        self.assertTrue(torch.equal(first.noisy, second.noisy))
+        self.assertEqual(first.utterance_key, second.utterance_key)
+        self.assertEqual(first.crop_start, second.crop_start)
+        self.assertEqual(first.crop_end, second.crop_end)
 
     def test_build_datasets_rejects_mixed_noise_splits(self) -> None:
         cfg = load_config(se_config("mp_senet"))
@@ -279,3 +328,44 @@ class AdditiveNoiseDatasetTest(unittest.TestCase):
         out = cal_pcs(wave)
         self.assertEqual(out.shape, wave.shape)
         self.assertAlmostEqual(float(np.max(np.abs(out))), 1.0, places=5)
+
+    def test_random_crop_uses_source_sample_coordinates(self) -> None:
+        long_frames = 8000
+        path = self.corpora / "LibriSpeech" / "train-clean-100" / "1234" / "56789" / "1234-56789-0099.flac"
+        write_audio(path, _tone(long_frames, 220.0), SAMPLE_RATE)
+        utterance = Utterance(
+            corpus="LibriSpeech",
+            subset="train-clean-100",
+            speaker_id="1234",
+            chapter_id="56789",
+            utterance_id="0099",
+            audio_path=path,
+            sample_rate=SAMPLE_RATE,
+            frames=long_frames,
+            channels=1,
+            text="long",
+        )
+        first = self._dataset(utterances=[utterance], crop=True, segment_size=1600, seed=1)[0]
+        second = self._dataset(utterances=[utterance], crop=True, segment_size=1600, seed=2)[0]
+        self.assertEqual(first.utterance_key, "1234-56789-0099")
+        self.assertEqual(first.utterance_key, second.utterance_key)
+        self.assertEqual(tuple(first.clean.shape), (1600,))
+        self.assertEqual(first.crop_end, first.crop_start + 1600)
+        self.assertEqual(second.crop_end, second.crop_start + 1600)
+        self.assertNotEqual(first.crop_start, second.crop_start)
+
+    def test_short_utterance_padding_crop_end_is_real_audio(self) -> None:
+        sample = self._dataset(crop=True, segment_size=48000, seed=0)[0]
+        self.assertEqual(tuple(sample.clean.shape), (48000,))
+        self.assertEqual(sample.crop_start, 0)
+        self.assertEqual(sample.crop_end, N_SAMPLES)
+        self.assertTrue(torch.equal(sample.clean[N_SAMPLES:], torch.zeros(48000 - N_SAMPLES)))
+
+    def test_default_collate_keeps_crop_metadata(self) -> None:
+        from torch.utils.data._utils.collate import default_collate
+
+        sample = self._dataset(crop=True, segment_size=800, seed=0)[0]
+        batched = default_collate([sample])
+        self.assertEqual(list(batched.utterance_key), ["1234-56789-0000"])
+        self.assertEqual(int(batched.crop_start[0]), sample.crop_start)
+        self.assertEqual(int(batched.crop_end[0]), sample.crop_end)
