@@ -1,0 +1,65 @@
+[戻る](../docs/environment.md)
+---
+
+# NVIDIA H100-96GB
+
+| package | version |
+|---------|:-------:|
+| Python | 3.10.20 |
+| NVIDIA driver | 580.105.08 (構築時の実行ノードで確認) |
+| CUDA runtime | 12.4 (PyTorch cu124 wheel) |
+| CUDA toolkit (nvcc) | 未確認 |
+
+## 仮想環境作成
+
+```bash
+export UV_CACHE_DIR=./.venvs/.uv
+uv venv ./.venvs/tsubame --python 3.10
+source ./.venvs/tsubame/bin/activate
+```
+
+## 依存パッケージインストール
+
+```bash
+uv pip install \
+    torch==2.6.0 \
+    torchvision==0.21.0 \
+    torchaudio==2.6.0 \
+    "nemo_toolkit[asr]" \
+    evaluate \
+    jiwer \
+    pesq \
+    num2words \
+    cmudict \
+    g2p_en \
+    duckdb \
+    duckdb-cli \
+    "setuptools<82" \
+    "numba==0.60.0" \
+    "llvmlite==0.43.0" \
+    --index-url https://download.pytorch.org/whl/cu124 \
+    --extra-index-url https://pypi.org/simple
+```
+
+## mamba_ssm インストール
+
+`/net/spring/work/seki/exp/master/speech-enhancement` と同じ `mamba-ssm` 2.2.4 の事前ビルド wheel を入れる。`nemo_toolkit[asr]` が入れる transformers 5.x では `GreedySearchDecoderOnlyOutput` が無く `mamba_ssm` の import が失敗するため、`.venvs/sitecustomize.py` を site-packages に置く。
+
+```bash
+uv pip install \
+    triton==3.2.0 \
+    packaging \
+    ninja \
+    wheel
+uv pip install --no-deps \
+    "https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4%2Bcu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+cp .venvs/sitecustomize.py .venvs/tsubame/lib/python3.10/site-packages/sitecustomize.py
+```
+
+## nnAudio インストール
+
+SEMamba++ の判別器（`src/se/se_mamba_pp/discriminator.py` の `DiscriminatorCQT`）が CQT 変換に使う。
+
+```bash
+uv pip install nnAudio==0.3.4
+```

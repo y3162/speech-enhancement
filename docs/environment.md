@@ -13,6 +13,10 @@
 
 [.venvs/shannon.md](../.venvs/shannon.md)を参照。
 
+## Tsubame
+
+[.venvs/tsubame.md](../.venvs/tsubame.md)を参照。
+
 ## テスト
 
 リポジトリルートで実行する。`PYTHON` でインタプリタを差し替えられる。

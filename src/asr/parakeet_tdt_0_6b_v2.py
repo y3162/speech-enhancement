@@ -74,6 +74,7 @@ class ParakeetTDT06BV2(nn.Module):
             decoding_cfg.strategy = "greedy_batch"
             decoding_cfg.compute_timestamps = False
             decoding_cfg.tdt_include_token_duration = True
+            decoding_cfg.greedy.use_cuda_graph_decoder = False
         self.model.change_decoding_strategy(decoding_cfg)
         self.samples_per_encoder_frame = int(self.model.preprocessor.featurizer.hop_length) * int(
             self.model.encoder.subsampling_factor
