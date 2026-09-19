@@ -40,6 +40,13 @@
             "lr_decay": 0.99
         },
         "loss": {
+            "magnitude": 0.9,
+            "phase": 0.3,
+            "complex": 0.1,
+            "consistency": 0.1,
+            "adv_g": 1.0,
+            "fm_g": 1.0,
+            "mel": 0.1,
             "tdt": 1.0
         }
     }

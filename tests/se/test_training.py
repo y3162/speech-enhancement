@@ -37,7 +37,8 @@ class ConfigFileTest(unittest.TestCase):
                 self.assertFalse(hasattr(cfg.train, "env"))
                 self.assertFalse(hasattr(cfg, "checkpoint_root"))
                 if path.parent.parent.name == "se_mamba_pp":
-                    self.assertIn("tdt", vars(cfg.train.loss))
+                    for key in ("magnitude", "phase", "complex", "consistency", "adv_g", "fm_g", "mel", "tdt"):
+                        self.assertIn(key, vars(cfg.train.loss))
                 else:
                     self.assertIn("consistency", vars(cfg.train.loss))
 

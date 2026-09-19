@@ -104,10 +104,11 @@ def generator_loss(
     gen_hat: Spec,
     d: DiscriminatorOutputs,
     mel: torch.Tensor,
+    tdt: torch.Tensor,
     weights: SimpleNamespace,
     n_fft: int,
 ) -> dict[str, torch.Tensor]:
-    """SEMamba++ generator loss: adversarial, feature matching, mel, and spectral terms. No time term."""
+    """SEMamba++ generator loss: adversarial, feature matching, mel, spectral, and TDT terms. No time term."""
     ip_loss, gd_loss, iaf_loss = phase_loss_gradient_matrix(clean.pha, gen.pha, n_fft)
     losses = {
         "magnitude": F.mse_loss(clean.mag, gen.mag),
@@ -117,6 +118,7 @@ def generator_loss(
         "adv_g": lsgan_generator_loss(d.cqt_fake) + lsgan_generator_loss(d.mrd_fake),
         "fm_g": feature_loss(d.cqt_fmap_real, d.cqt_fmap_fake) + feature_loss(d.mrd_fmap_real, d.mrd_fmap_fake),
         "mel": mel,
+        "tdt": tdt,
     }
     losses["total"] = (
         weights.magnitude * losses["magnitude"]
@@ -126,5 +128,6 @@ def generator_loss(
         + weights.adv_g * losses["adv_g"]
         + weights.fm_g * losses["fm_g"]
         + weights.mel * losses["mel"]
+        + weights.tdt * losses["tdt"]
     )
     return losses
