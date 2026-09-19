@@ -12,8 +12,7 @@
         "train_splits": ["train-clean-100", "train-clean-360"],
         "validation_splits": ["dev-clean"],
         "noise_config_ids": null,
-        "pcs400": false,
-        "timestamp_cache": "data/asr/parakeet_tdt_0_6b_v2/librispeech.jsonl"
+        "pcs400": false
     },
     "model": {
         "hid_feature": 48,

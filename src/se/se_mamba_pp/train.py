@@ -14,13 +14,13 @@ from torch.utils.data import DataLoader
 
 from src.asr.parakeet_tdt_0_6b_v2 import ParakeetTDT06BV2
 from src.asr.timestamp_cache import (
-    TimestampRecord,
     crop_token_ids,
     load_timestamp_cache,
     missing_timestamp_keys,
     require_timestamp_record,
 )
 from src.data.corpora.librispeech import utterance_key
+from src.data.schema import AsrTimestamp
 from src.se.common.dataset import AdditiveNoiseDataset, build_datasets
 from src.se.common.pesq import pesq_sum
 from src.se.common.stft import Spec, mag_pha_istft, mag_pha_stft
@@ -59,7 +59,7 @@ def _guidance_features(
 
 def _tdt_targets_from_cache(
     asr: ParakeetTDT06BV2,
-    cache: dict[str, TimestampRecord],
+    cache: dict[str, AsrTimestamp],
     utterance_keys: Sequence[str],
     crop_starts: torch.Tensor,
     crop_ends: torch.Tensor,
@@ -89,7 +89,7 @@ def _grad_norm(module: nn.Module) -> float:
     return total**0.5
 
 
-def _require_cache_coverage(cache: dict[str, TimestampRecord], dataset: AdditiveNoiseDataset, name: str) -> None:
+def _require_cache_coverage(cache: dict[str, AsrTimestamp], dataset: AdditiveNoiseDataset, name: str) -> None:
     keys = [utterance_key(utterance) for utterance in dataset.utterances]
     missing = missing_timestamp_keys(cache, keys)
     if missing:
@@ -113,7 +113,7 @@ def _forward_generator(
 def validate(
     generator: nn.Module,
     asr: ParakeetTDT06BV2,
-    cache: dict[str, TimestampRecord],
+    cache: dict[str, AsrTimestamp],
     loader: DataLoader,
     cfg: SimpleNamespace,
     device: torch.device,
@@ -169,7 +169,7 @@ def main() -> None:
     max_steps = getattr(cfg.train, "max_steps", None)
 
     trainset, validset = build_datasets(cfg)
-    timestamp_cache = load_timestamp_cache(Path(cfg.data.timestamp_cache))
+    timestamp_cache = load_timestamp_cache()
     _require_cache_coverage(timestamp_cache, trainset, "train")
     _require_cache_coverage(timestamp_cache, validset, "validation")
 
@@ -201,7 +201,7 @@ def main() -> None:
         print(
             f"SEMamba++: {sum(p.numel() for p in generator.parameters()) / 1e6:.3f}M params, "
             f"{dist.get_world_size()} GPU(s) x batch {cfg.train.batch_size}, "
-            f"timestamp_cache={cfg.data.timestamp_cache} entries={len(timestamp_cache)}",
+            f"asr_timestamps={len(timestamp_cache)}",
             flush=True,
         )
 

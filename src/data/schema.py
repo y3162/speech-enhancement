@@ -210,3 +210,88 @@ class NoiseConfig:
             split=split,
             created_at=created_at,
         )
+
+
+ASR_TIMESTAMPS_TABLE = Table(
+    name="asr_timestamps",
+    sequence="asr_timestamps_id_seq",
+    insert_columns=("utterance_key", "text", "samples_per_encoder_frame", "tokens"),
+    select_sql=(
+        "asr_timestamps.id, asr_timestamps.utterance_key, asr_timestamps.text, "
+        "asr_timestamps.samples_per_encoder_frame, asr_timestamps.tokens, asr_timestamps.created_at"
+    ),
+    create_sql="""CREATE SEQUENCE IF NOT EXISTS asr_timestamps_id_seq START 1;
+CREATE TABLE IF NOT EXISTS asr_timestamps (
+    id INTEGER PRIMARY KEY NOT NULL DEFAULT nextval('asr_timestamps_id_seq'),
+    utterance_key TEXT NOT NULL UNIQUE,
+    text TEXT NOT NULL,
+    samples_per_encoder_frame INTEGER NOT NULL,
+    tokens JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);""",
+)
+
+
+@dataclass(frozen=True)
+class AsrToken:
+    token_id: int
+    token: str
+    start_offset: int
+    end_offset: int
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "token_id": self.token_id,
+            "token": self.token,
+            "start_frame": self.start_offset,
+            "end_frame": self.end_offset,
+        }
+
+    @classmethod
+    def from_json(cls, payload: object) -> "AsrToken":
+        if not isinstance(payload, dict):
+            raise ValueError("timestamp token must be an object")
+        return cls(
+            token_id=int(payload["token_id"]),
+            token=str(payload["token"]),
+            start_offset=int(payload["start_frame"]),
+            end_offset=int(payload["end_frame"]),
+        )
+
+
+def _asr_tokens_from_payload(payload: object) -> list[AsrToken]:
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, list):
+        raise ValueError("timestamp record is missing tokens")
+    return [AsrToken.from_json(item) for item in payload]
+
+
+@dataclass(frozen=True, kw_only=True)
+class AsrTimestamp:
+    utterance_key: str
+    text: str
+    samples_per_encoder_frame: int
+    tokens: list[AsrToken]
+    id: int | None = None
+    created_at: datetime | None = None
+
+    def insert_values(self) -> tuple[Any, ...]:
+        return (
+            self.utterance_key,
+            self.text,
+            self.samples_per_encoder_frame,
+            json.dumps([token.to_json() for token in self.tokens], ensure_ascii=False),
+        )
+
+    @classmethod
+    def from_sql(cls, row: Sequence[Any]) -> "AsrTimestamp":
+        id_, utterance_key, text, samples_per_encoder_frame, tokens, created_at = row
+        return cls(
+            id=id_,
+            utterance_key=utterance_key,
+            text=text,
+            samples_per_encoder_frame=int(samples_per_encoder_frame),
+            tokens=_asr_tokens_from_payload(tokens),
+            created_at=created_at,
+        )

@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,16 +6,15 @@ import torch
 
 from src.asr.parakeet_tdt_0_6b_v2 import ParakeetTDT06BV2
 from src.asr.timestamp_cache import (
-    CachedToken,
-    TimestampRecord,
     crop_token_ids,
     load_timestamp_cache,
     require_timestamp_record,
-    timestamp_record_from_json,
-    timestamp_record_to_json,
 )
 from src.asr.timestamp_crop import slice_tokens_for_crop
+from src.data.db import import_rows
+from src.data.schema import ASR_TIMESTAMPS_TABLE, AsrTimestamp, AsrToken
 from src.se.se_mamba_pp.train import _tdt_targets_from_cache, _wav_lengths
+from tests.helpers import speech_env
 
 DEVICE: torch.device
 ASR: ParakeetTDT06BV2
@@ -46,44 +44,44 @@ class TimestampCacheGpuTest(unittest.TestCase):
             [(token.token_id, token.start_offset, token.end_offset) for token in first.tokens],
             [(token.token_id, token.start_offset, token.end_offset) for token in second.tokens],
         )
-        record = TimestampRecord(
+        record = AsrTimestamp(
             utterance_key="1234-56789-0000",
             text=first.text,
             samples_per_encoder_frame=first.samples_per_encoder_frame,
             tokens=[
-                CachedToken(token.token_id, token.token, token.start_offset, token.end_offset) for token in first.tokens
+                AsrToken(token.token_id, token.token, token.start_offset, token.end_offset) for token in first.tokens
             ],
         )
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "cache.jsonl"
-            path.write_text(json.dumps(timestamp_record_to_json(record)) + "\n", encoding="utf-8")
-            loaded = timestamp_record_from_json(json.loads(path.read_text(encoding="utf-8").splitlines()[0]))
-            self.assertEqual(loaded.utterance_key, record.utterance_key)
-            self.assertEqual(loaded.text, record.text)
-            self.assertEqual(
-                [(token.token_id, token.start_offset, token.end_offset) for token in loaded.tokens],
-                [(token.token_id, token.start_offset, token.end_offset) for token in record.tokens],
-            )
-            cache = load_timestamp_cache(path)
-            crop_start, crop_end = 0, 16000
-            crop_ids = crop_token_ids(require_timestamp_record(cache, "1234-56789-0000"), crop_start, crop_end)
-            selected = slice_tokens_for_crop(record.tokens, crop_start, crop_end, record.samples_per_encoder_frame)
-            self.assertEqual(crop_ids, [token.token_id for token in selected])
-            texts, _, _, empty = _tdt_targets_from_cache(
-                ASR,
-                cache,
-                ["1234-56789-0000"],
-                torch.tensor([crop_start]),
-                torch.tensor([crop_end]),
-            )
-            self.assertEqual(texts[0], ASR.ids_to_text(crop_ids))
-            other_start, other_end = 16000, samples
-            other_ids = crop_token_ids(record, other_start, other_end)
-            if crop_ids or other_ids:
-                self.assertNotEqual(crop_ids, other_ids)
-            nll = ASR.loss(wav[:, crop_start:crop_end], torch.tensor([crop_end - crop_start], device=DEVICE), texts)
-            self.assertTrue(torch.isfinite(nll).all())
-            self.assertEqual(empty, int(texts[0] == ""))
+            with speech_env(Path(tmp)) as (db_dir, _):
+                import_rows(db_dir / "metadata.duckdb", ASR_TIMESTAMPS_TABLE, [record])
+                cache = load_timestamp_cache()
+                loaded = require_timestamp_record(cache, "1234-56789-0000")
+                self.assertEqual(loaded.utterance_key, record.utterance_key)
+                self.assertEqual(loaded.text, record.text)
+                self.assertEqual(
+                    [(token.token_id, token.start_offset, token.end_offset) for token in loaded.tokens],
+                    [(token.token_id, token.start_offset, token.end_offset) for token in record.tokens],
+                )
+                crop_start, crop_end = 0, 16000
+                crop_ids = crop_token_ids(loaded, crop_start, crop_end)
+                selected = slice_tokens_for_crop(record.tokens, crop_start, crop_end, record.samples_per_encoder_frame)
+                self.assertEqual(crop_ids, [token.token_id for token in selected])
+                texts, _, _, empty = _tdt_targets_from_cache(
+                    ASR,
+                    cache,
+                    ["1234-56789-0000"],
+                    torch.tensor([crop_start]),
+                    torch.tensor([crop_end]),
+                )
+                self.assertEqual(texts[0], ASR.ids_to_text(crop_ids))
+                other_start, other_end = 16000, samples
+                other_ids = crop_token_ids(record, other_start, other_end)
+                if crop_ids or other_ids:
+                    self.assertNotEqual(crop_ids, other_ids)
+                nll = ASR.loss(wav[:, crop_start:crop_end], torch.tensor([crop_end - crop_start], device=DEVICE), texts)
+                self.assertTrue(torch.isfinite(nll).all())
+                self.assertEqual(empty, int(texts[0] == ""))
 
     def test_ids_to_text_roundtrip_empty_and_tokens(self) -> None:
         self.assertEqual(ASR.ids_to_text([]), "")

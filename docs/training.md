@@ -10,14 +10,8 @@ source .venvs/<host>/bin/activate
 export PYTHONPATH="$(pwd)"
 export SPEECH_DB_ROOT_DIR=...      # metadata.duckdb のあるディレクトリ（.env.example 参照）
 export SPEECH_CORPORA_ROOT_DIR=... # LibriSpeech などのコーパスルート。DB の audio_path は
-                                   # リポジトリルートからの相対パスなので、ルートで実行する
 
-# 必要なら（旧コードが設定していた値）
-export NCCL_IB_DISABLE=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export OMP_NUM_THREADS=1
-
-torchrun --nproc_per_node=2 -m src.se.se_mamba_pp.train \
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 -m src.se.se_mamba_pp.train \
     --run_dir data/checkpoints/se_mamba_pp/$(date +%Y%m%d_%H%M%S) \
     --config src/se/se_mamba_pp/configs/default.json
 ```

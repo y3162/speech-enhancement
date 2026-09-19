@@ -7,16 +7,18 @@ from pathlib import Path
 import duckdb
 
 from .schema import (
+    ASR_TIMESTAMPS_TABLE,
     NOISE_CONFIGS_TABLE,
     NOISES_TABLE,
     UTTERANCES_TABLE,
+    AsrTimestamp,
     Noise,
     NoiseConfig,
     Table,
     Utterance,
 )
 
-Record = Utterance | Noise | NoiseConfig
+Record = Utterance | Noise | NoiseConfig | AsrTimestamp
 
 
 def _required_env_path(name: str) -> Path:
@@ -71,12 +73,12 @@ class Connection:
                 writer = csv.writer(csv_file, lineterminator="\n")
                 writer.writerow(names)
                 for row in rows:
-                    writer.writerow("" if value is None else value for value in row.insert_values())
+                    writer.writerow("\\N" if value is None else value for value in row.insert_values())
             column_list = ", ".join(names)
             escaped_path = csv_path.replace("'", "''")
             self._conn.execute(
                 f"COPY {table.name} ({column_list}) FROM '{escaped_path}' "
-                "(HEADER TRUE, DELIMITER ',', QUOTE '\"', ESCAPE '\"', NULL '')"
+                "(HEADER TRUE, DELIMITER ',', QUOTE '\"', ESCAPE '\"', NULL '\\N')"
             )
         finally:
             os.unlink(csv_path)
@@ -150,3 +152,13 @@ def fetch_noise_by_id(connection: Connection, noise_id: int) -> Noise:
     if not rows:
         raise ValueError(f"Noise id {noise_id} not found")
     return Noise.from_sql(rows[0])
+
+
+def fetch_asr_timestamps(connection: Connection) -> list[AsrTimestamp]:
+    sql = f"SELECT {ASR_TIMESTAMPS_TABLE.select_sql} FROM {ASR_TIMESTAMPS_TABLE.name} ORDER BY id"
+    return [AsrTimestamp.from_sql(row) for row in connection.fetchall(sql)]
+
+
+def fetch_asr_timestamp_keys(connection: Connection) -> set[str]:
+    sql = f"SELECT utterance_key FROM {ASR_TIMESTAMPS_TABLE.name}"
+    return {str(row[0]) for row in connection.fetchall(sql)}
