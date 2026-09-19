@@ -141,7 +141,8 @@ class ParakeetTDT06BV2(nn.Module):
         layer_indices = self._resolve_layer_indices(layers)
         batch_size = waveforms.shape[0]
         valid = lengths > 0
-        if not bool(valid.any()):
+        n_valid = int(valid.sum().item())
+        if n_valid == 0:
             encoded = waveforms.new_zeros(batch_size, int(self.model.encoder.d_model), 0) + waveforms.sum() * 0
             encoded_length = torch.zeros(batch_size, device=lengths.device, dtype=torch.int64)
             return EncodeResult(
@@ -152,7 +153,7 @@ class ParakeetTDT06BV2(nn.Module):
         idx = None
         waveforms_valid = waveforms
         lengths_valid = lengths
-        if not bool(valid.all()):
+        if n_valid != batch_size:
             idx = valid.nonzero(as_tuple=False).squeeze(1)
             waveforms_valid = waveforms.index_select(0, idx)
             lengths_valid = lengths.index_select(0, idx)
@@ -323,27 +324,37 @@ class ParakeetTDT06BV2(nn.Module):
         lengths: torch.Tensor,
         texts: Sequence[str],
     ) -> torch.Tensor:
+        return self.loss_from_ids(waveforms, lengths, [self.model.tokenizer.text_to_ids(text) for text in texts])
+
+    def loss_from_ids(
+        self,
+        waveforms: torch.Tensor,
+        lengths: torch.Tensor,
+        token_ids: Sequence[Sequence[int]],
+    ) -> torch.Tensor:
         batch_size = waveforms.shape[0]
-        token_id_lists = [self.model.tokenizer.text_to_ids(text) for text in texts]
-        valid = (lengths > 0) & torch.tensor(
-            [len(ids) > 0 for ids in token_id_lists],
-            device=lengths.device,
-            dtype=torch.bool,
-        )
-        if not bool(valid.any()):
+        if len(token_ids) != batch_size:
+            raise ValueError(f"token_ids length {len(token_ids)} != batch {batch_size}")
+        nonempty = [len(ids) > 0 for ids in token_ids]
+        valid = (lengths > 0) & torch.tensor(nonempty, device=lengths.device, dtype=torch.bool)
+        n_valid = int(valid.sum().item())
+        if n_valid == 0:
             return waveforms.new_zeros(batch_size) + waveforms.sum() * 0
         idx = None
-        if not bool(valid.all()):
+        token_id_lists = list(token_ids)
+        if n_valid != batch_size:
             idx = valid.nonzero(as_tuple=False).squeeze(1)
             waveforms = waveforms.index_select(0, idx)
             lengths = lengths.index_select(0, idx)
             token_id_lists = [token_id_lists[int(i)] for i in idx.tolist()]
-        target_lengths = torch.tensor([len(ids) for ids in token_id_lists], device=waveforms.device, dtype=torch.int64)
-        max_length = int(target_lengths.max().item())
-        targets = torch.zeros((len(token_id_lists), max_length), device=waveforms.device, dtype=torch.int64)
+        target_lengths_cpu = torch.tensor([len(ids) for ids in token_id_lists], dtype=torch.int64)
+        max_length = int(target_lengths_cpu.max().item())
+        targets_cpu = torch.zeros((len(token_id_lists), max_length), dtype=torch.int64)
         for i, ids in enumerate(token_id_lists):
             if ids:
-                targets[i, : len(ids)] = torch.tensor(ids, device=waveforms.device, dtype=torch.int64)
+                targets_cpu[i, : len(ids)] = torch.tensor(ids, dtype=torch.int64)
+        target_lengths = target_lengths_cpu.to(device=waveforms.device, non_blocking=True)
+        targets = targets_cpu.to(device=waveforms.device, non_blocking=True)
         encoded = self.encode(waveforms, lengths)
         decoder_outputs, _, _ = self.model.decoder(
             targets=targets,

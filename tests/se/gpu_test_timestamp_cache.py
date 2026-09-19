@@ -67,21 +67,24 @@ class TimestampCacheGpuTest(unittest.TestCase):
                 crop_ids = crop_token_ids(loaded, crop_start, crop_end)
                 selected = slice_tokens_for_crop(record.tokens, crop_start, crop_end, record.samples_per_encoder_frame)
                 self.assertEqual(crop_ids, [token.token_id for token in selected])
-                texts, _, _, empty = _tdt_targets_from_cache(
-                    ASR,
+                token_ids, empty = _tdt_targets_from_cache(
                     cache,
                     ["1234-56789-0000"],
                     torch.tensor([crop_start]),
                     torch.tensor([crop_end]),
                 )
-                self.assertEqual(texts[0], ASR.ids_to_text(crop_ids))
+                self.assertEqual(token_ids[0], crop_ids)
                 other_start, other_end = 16000, samples
                 other_ids = crop_token_ids(record, other_start, other_end)
                 if crop_ids or other_ids:
                     self.assertNotEqual(crop_ids, other_ids)
-                nll = ASR.loss(wav[:, crop_start:crop_end], torch.tensor([crop_end - crop_start], device=DEVICE), texts)
+                nll = ASR.loss_from_ids(
+                    wav[:, crop_start:crop_end],
+                    torch.tensor([crop_end - crop_start], device=DEVICE),
+                    token_ids,
+                )
                 self.assertTrue(torch.isfinite(nll).all())
-                self.assertEqual(empty, int(texts[0] == ""))
+                self.assertEqual(empty, int(len(token_ids[0]) == 0))
 
     def test_ids_to_text_roundtrip_empty_and_tokens(self) -> None:
         self.assertEqual(ASR.ids_to_text([]), "")

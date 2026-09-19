@@ -79,6 +79,23 @@ def crop_token_ids(record: AsrTimestamp, crop_start: int, crop_end: int) -> list
     return [token.token_id for token in selected]
 
 
+def crop_batch_token_ids(
+    cache: dict[str, AsrTimestamp],
+    utterance_keys: Sequence[str],
+    crop_starts: Sequence[int],
+    crop_ends: Sequence[int],
+) -> list[list[int]]:
+    if len(utterance_keys) != len(crop_starts) or len(utterance_keys) != len(crop_ends):
+        raise ValueError(
+            "utterance_keys/crop_starts/crop_ends lengths differ: "
+            f"{len(utterance_keys)}, {len(crop_starts)}, {len(crop_ends)}"
+        )
+    return [
+        crop_token_ids(require_timestamp_record(cache, key), int(start), int(end))
+        for key, start, end in zip(utterance_keys, crop_starts, crop_ends)
+    ]
+
+
 def _fetch_split_utterances(splits: Sequence[str]) -> list[Utterance]:
     with Connection(metadata_path(), read_only=True) as connection:
         return fetch_utterances(connection, _LIBRISPEECH_CORPUS, splits)

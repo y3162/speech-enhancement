@@ -25,11 +25,11 @@
         "asr_guidance_dim": 128
     },
     "train": {
-        "batch_size": 1,
+        "batch_size": 2,
         "epochs": 100,
         "seed": 42,
-        "num_workers": 8,
-        "prefetch_factor": 2,
+        "num_workers": 4,
+        "prefetch_factor": 4,
         "val_batch_size": 1,
         "pesq_num_workers": 4,
         "log_interval": 100,

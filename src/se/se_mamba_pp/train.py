@@ -16,14 +16,13 @@ from torch.utils.data import DataLoader
 
 from src.asr.parakeet_tdt_0_6b_v2 import ParakeetTDT06BV2
 from src.asr.timestamp_cache import (
-    crop_token_ids,
+    crop_batch_token_ids,
     load_timestamp_cache,
     missing_timestamp_keys,
-    require_timestamp_record,
 )
 from src.data.corpora.librispeech import utterance_key
 from src.data.schema import AsrTimestamp
-from src.se.common.dataset import AdditiveNoiseDataset, build_datasets
+from src.se.common.dataset import AdditiveNoiseDataset, build_datasets, pad_collate
 from src.se.common.pesq import pesq_sum
 from src.se.common.stft import Spec, mag_pha_istft, mag_pha_stft
 from src.se.common.training import (
@@ -60,27 +59,13 @@ def _guidance_features(
 
 
 def _tdt_targets_from_cache(
-    asr: ParakeetTDT06BV2,
     cache: dict[str, AsrTimestamp],
     utterance_keys: Sequence[str],
     crop_starts: torch.Tensor,
     crop_ends: torch.Tensor,
-) -> tuple[list[str], float, float, int]:
-    texts: list[str] = []
-    lookup_s = 0.0
-    slice_s = 0.0
-    empty = 0
-    for key, crop_start, crop_end in zip(utterance_keys, crop_starts.tolist(), crop_ends.tolist()):
-        t0 = time.perf_counter()
-        record = require_timestamp_record(cache, key)
-        lookup_s += time.perf_counter() - t0
-        t0 = time.perf_counter()
-        token_ids = crop_token_ids(record, int(crop_start), int(crop_end))
-        slice_s += time.perf_counter() - t0
-        text = asr.ids_to_text(token_ids)
-        empty += int(text == "")
-        texts.append(text)
-    return texts, lookup_s, slice_s, empty
+) -> tuple[list[list[int]], int]:
+    token_ids = crop_batch_token_ids(cache, utterance_keys, crop_starts.tolist(), crop_ends.tolist())
+    return token_ids, sum(len(ids) == 0 for ids in token_ids)
 
 
 def _grad_norm(module: nn.Module) -> float:
@@ -140,8 +125,8 @@ def validate(
             asr_hidden, asr_lengths = _guidance_features(asr, noisy_audio, lengths)
         gen = _forward_generator(generator, noisy.mag, noisy.pha, asr_hidden, asr_lengths)
         enhanced_audio = mag_pha_istft(gen.mag, gen.pha, stft, length=clean_audio.size(1))
-        texts, _, _, empty_n = _tdt_targets_from_cache(asr, cache, utterance_keys, crop_starts, crop_ends)
-        tdt = asr.loss(enhanced_audio, lengths, texts)
+        token_ids, empty_n = _tdt_targets_from_cache(cache, utterance_keys, crop_starts, crop_ends)
+        tdt = asr.loss_from_ids(enhanced_audio, lengths, token_ids)
         batch = clean_audio.size(0)
         n += batch
         empty += empty_n
@@ -198,7 +183,7 @@ def main() -> None:
             print(f"Resumed from epoch {start_epoch} (step {steps}, best_pesq={best_pesq:.3f})", flush=True)
 
     generator = DDP(generator, device_ids=[device.index])
-    train_loader, valid_loader = build_loaders(trainset, validset, cfg.train)
+    train_loader, valid_loader = build_loaders(trainset, validset, cfg.train, train_collate_fn=pad_collate)
     if rank == 0:
         print(
             f"SEMamba++: {sum(p.numel() for p in generator.parameters()) / 1e6:.3f}M params, "
@@ -213,16 +198,19 @@ def main() -> None:
     for epoch in range(start_epoch, cfg.train.epochs):
         train_loader.sampler.set_epoch(epoch)  # type: ignore[union-attr]
         generator.train()
-        for clean_audio, noisy_audio, utterance_keys, crop_starts, crop_ends in train_loader:
+        for clean_audio, noisy_audio, lengths, utterance_keys, crop_starts, crop_ends in train_loader:
             step_t0 = time.perf_counter()
             clean_audio = clean_audio.to(device, non_blocking=True)
             noisy_audio = noisy_audio.to(device, non_blocking=True)
-            wav_lengths = _wav_lengths(clean_audio)
+            wav_lengths = lengths.to(device, non_blocking=True)
             noisy = mag_pha_stft(noisy_audio, stft)
-
             asr_hidden, asr_lengths = (None, None)
-            texts, lookup_s, slice_s, empty_batch = _tdt_targets_from_cache(
-                asr,
+            if guidance:
+                with torch.no_grad():
+                    asr_hidden, asr_lengths = _guidance_features(asr, noisy_audio, wav_lengths)
+            gen = _forward_generator(generator, noisy.mag, noisy.pha, asr_hidden, asr_lengths)
+            enhanced_audio = mag_pha_istft(gen.mag, gen.pha, stft)
+            token_ids, empty_batch = _tdt_targets_from_cache(
                 timestamp_cache,
                 utterance_keys,
                 crop_starts,
@@ -230,13 +218,7 @@ def main() -> None:
             )
             empty_n += empty_batch
             seen_n += clean_audio.size(0)
-            if guidance:
-                with torch.no_grad():
-                    asr_hidden, asr_lengths = _guidance_features(asr, noisy_audio, wav_lengths)
-
-            gen = _forward_generator(generator, noisy.mag, noisy.pha, asr_hidden, asr_lengths)
-            enhanced_audio = mag_pha_istft(gen.mag, gen.pha, stft)
-            losses = {"tdt": weights.tdt * asr.loss(enhanced_audio, wav_lengths, texts).mean()}
+            losses = {"tdt": weights.tdt * asr.loss_from_ids(enhanced_audio, wav_lengths, token_ids).mean()}
 
             optim_g.zero_grad(set_to_none=True)
             losses["tdt"].backward()
@@ -245,14 +227,13 @@ def main() -> None:
             steps += 1
             if rank == 0 and steps % cfg.train.log_interval == 0:
                 step_s = time.perf_counter() - step_t0
-                tdt_val = float(losses["tdt"])
+                tdt_val = float(losses["tdt"].detach())
                 gen_mod = generator.module
                 proj, fuse = gen_mod.asr_proj, gen_mod.asr_fuse
                 asr_has_grad = any(parameter.grad is not None for parameter in asr.parameters())
                 print(
                     f"epoch {epoch + 1} step {steps}: tdt={tdt_val:.3f} finite={math.isfinite(tdt_val)} "
-                    f"empty={empty_n}/{seen_n} lookup_ms={lookup_s * 1000:.3f} "
-                    f"slice_ms={slice_s * 1000:.3f} step_s={step_s:.3f} "
+                    f"empty={empty_n}/{seen_n} step_s={step_s:.3f} "
                     f"se_grad={_grad_norm(gen_mod):.4g} "
                     f"proj_grad={_grad_norm(proj) if proj is not None else 0.0:.4g} "
                     f"fuse_grad={_grad_norm(fuse) if fuse is not None else 0.0:.4g} "

@@ -2,6 +2,8 @@
 
 import os
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 
 def pin_local_cuda_device() -> None:
     local_rank = os.environ.get("LOCAL_RANK")

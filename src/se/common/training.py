@@ -90,12 +90,15 @@ def build_loaders(
     trainset: Dataset,
     validset: Dataset,
     train: SimpleNamespace,
+    train_collate_fn: Any | None = None,
 ) -> tuple[DataLoader, DataLoader]:
     train_kwargs: dict[str, Any] = {}
     if train.num_workers > 0:
         train_kwargs["persistent_workers"] = True
         train_kwargs["prefetch_factor"] = train.prefetch_factor
         train_kwargs["worker_init_fn"] = worker_init_fn
+    if train_collate_fn is not None:
+        train_kwargs["collate_fn"] = train_collate_fn
     train_loader = DataLoader(
         trainset,
         batch_size=train.batch_size,

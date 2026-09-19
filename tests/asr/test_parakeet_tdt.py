@@ -75,6 +75,18 @@ class ParakeetLossTest(_ParakeetCase):
         nll = MODEL.loss(wav, lengths, ["", ""])
         self.assertTrue(torch.equal(nll.detach(), torch.zeros(2, device=DEVICE)))
 
+    def test_loss_from_ids_matches_text_and_rejects_batch_mismatch(self) -> None:
+        wav, lengths = _waveforms(requires_grad=True)
+        texts = ["hello", ""]
+        token_ids = [MODEL.model.tokenizer.text_to_ids(text) for text in texts]
+        self.assertEqual(token_ids[1], [])
+        from_text = MODEL.loss(wav, lengths, texts)
+        from_ids = MODEL.loss_from_ids(wav, lengths, token_ids)
+        self.assertTrue(torch.allclose(from_text, from_ids, atol=1e-4, rtol=1e-4))
+        self.assertEqual(float(from_ids[1].detach()), 0.0)
+        with self.assertRaises(ValueError):
+            MODEL.loss_from_ids(wav, lengths, token_ids[:1])
+
 
 class ParakeetGradientTest(_ParakeetCase):
     def test_eval_populates_waveform_grad_not_parameter_grad(self) -> None:

@@ -11,6 +11,7 @@ import numpy as np
 from src.asr.timestamp_cache import (
     asr_timestamp_from_json,
     asr_timestamp_to_json,
+    crop_batch_token_ids,
     crop_token_ids,
     load_timestamp_cache,
     missing_timestamp_keys,
@@ -118,6 +119,19 @@ class CropTokenIdsTest(unittest.TestCase):
         selected = slice_tokens_for_crop(tokens, 0, 10_000)
         self.assertEqual(crop_token_ids(record, 0, 10_000), [token.token_id for token in selected])
         self.assertEqual(crop_token_ids(record, 3000, 4000), [])
+
+    def test_crop_batch_token_ids_looks_up_and_checks_lengths(self) -> None:
+        left = _record("a", [AsrToken(1, "x", 0, 1)])
+        right = _record("b", [AsrToken(2, "y", 0, 2), AsrToken(3, "z", 2, 3)])
+        cache = {"a": left, "b": right}
+        self.assertEqual(
+            crop_batch_token_ids(cache, ["a", "b"], [0, 0], [2000, 10_000]),
+            [crop_token_ids(left, 0, 2000), crop_token_ids(right, 0, 10_000)],
+        )
+        with self.assertRaises(ValueError):
+            crop_batch_token_ids(cache, ["a"], [0, 1], [10])
+        with self.assertRaises(KeyError):
+            crop_batch_token_ids(cache, ["missing"], [0], [10])
 
 
 class TimestampCacheCliTest(unittest.TestCase):
