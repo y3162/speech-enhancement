@@ -1,4 +1,3 @@
-import json
 import sys
 import tempfile
 import unittest
@@ -9,8 +8,6 @@ import duckdb
 import numpy as np
 
 from src.asr.timestamp_cache import (
-    asr_timestamp_from_json,
-    asr_timestamp_to_json,
     crop_batch_token_ids,
     crop_token_ids,
     load_timestamp_cache,
@@ -27,32 +24,8 @@ def _record(key: str, tokens: list[AsrToken], text: str = "hello") -> AsrTimesta
     return AsrTimestamp(utterance_key=key, text=text, samples_per_encoder_frame=1280, tokens=tokens)
 
 
-def _write_jsonl(path: Path, records: list[AsrTimestamp]) -> None:
-    path.write_text(
-        "".join(json.dumps(asr_timestamp_to_json(record)) + "\n" for record in records),
-        encoding="utf-8",
-    )
-
-
 def _core(record: AsrTimestamp) -> tuple[object, ...]:
     return (record.utterance_key, record.text, record.samples_per_encoder_frame, record.tokens)
-
-
-class AsrTimestampJsonTest(unittest.TestCase):
-    def test_roundtrip_maps_frames_to_offsets(self) -> None:
-        record = _record(
-            "6078-54013-0037",
-            [
-                AsrToken(token_id=11, token="\u2581hello", start_offset=0, end_offset=2),
-                AsrToken(token_id=22, token="\u2581world", start_offset=4, end_offset=6),
-            ],
-        )
-        payload = asr_timestamp_to_json(record)
-        self.assertEqual(payload["utterance_key"], "6078-54013-0037")
-        self.assertEqual(payload["tokens"][0]["start_frame"], 0)
-        self.assertEqual(payload["tokens"][0]["end_frame"], 2)
-        restored = asr_timestamp_from_json(payload)
-        self.assertEqual(_core(restored), _core(record))
 
 
 class TimestampCacheLoadTest(unittest.TestCase):
@@ -135,29 +108,18 @@ class CropTokenIdsTest(unittest.TestCase):
 
 
 class TimestampCacheCliTest(unittest.TestCase):
-    def test_import_and_output_conflict(self) -> None:
+    def test_check_and_replace_conflict(self) -> None:
         from src.asr.timestamp_cache import main
 
         with mock.patch.object(
             sys,
             "argv",
-            ["timestamp_cache", "--import", "cache.jsonl", "--output", "other.jsonl"],
+            ["timestamp_cache", "--splits", "train-clean-100", "--check", "--replace"],
         ):
             with self.assertRaises(SystemExit):
                 main()
 
-    def test_import_and_check_conflict(self) -> None:
-        from src.asr.timestamp_cache import main
-
-        with mock.patch.object(
-            sys,
-            "argv",
-            ["timestamp_cache", "--import", "cache.jsonl", "--check", "--splits", "train-clean-100"],
-        ):
-            with self.assertRaises(SystemExit):
-                main()
-
-    def test_output_skips_existing_jsonl_without_asr(self) -> None:
+    def test_generate_skips_existing_without_asr(self) -> None:
         from src.asr.timestamp_cache import main
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -183,28 +145,17 @@ class TimestampCacheCliTest(unittest.TestCase):
                         )
                     ],
                 )
-                path = root / "cache.jsonl"
                 record = _record("1234-56789-0000", [])
-                _write_jsonl(path, [record])
+                import_rows(db_dir / "metadata.duckdb", ASR_TIMESTAMPS_TABLE, [record])
                 with mock.patch.object(
                     sys,
                     "argv",
-                    [
-                        "timestamp_cache",
-                        "--splits",
-                        "train-clean-100",
-                        "--output",
-                        str(path),
-                    ],
+                    ["timestamp_cache", "--splits", "train-clean-100"],
                 ):
                     main()
-                loaded = [
-                    asr_timestamp_from_json(json.loads(line))
-                    for line in path.read_text(encoding="utf-8").splitlines()
-                    if line.strip()
-                ]
-                self.assertEqual(len(loaded), 1)
-                self.assertEqual(_core(loaded[0]), _core(record))
+                cache = load_timestamp_cache()
+                self.assertEqual(list(cache), ["1234-56789-0000"])
+                self.assertEqual(_core(cache["1234-56789-0000"]), _core(record))
 
     def test_check_reports_missing_and_succeeds_when_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -246,52 +197,3 @@ class TimestampCacheCliTest(unittest.TestCase):
                     with self.assertRaises(SystemExit) as ctx_ok:
                         main()
                 self.assertEqual(ctx_ok.exception.code, 0)
-
-    def test_import_skips_existing_and_replace_overwrites(self) -> None:
-        from src.asr.timestamp_cache import main
-
-        first = _record("1234-56789-0000", [AsrToken(1, "a", 0, 1)], text="first")
-        updated = _record("1234-56789-0000", [AsrToken(2, "b", 1, 2)], text="updated")
-        extra = _record("1234-56789-0001", [AsrToken(3, "c", 2, 3)], text="extra")
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with speech_env(root) as (db_dir, _):
-                path = root / "cache.jsonl"
-                _write_jsonl(path, [first])
-                with mock.patch.object(sys, "argv", ["timestamp_cache", "--import", str(path)]):
-                    main()
-                cache = load_timestamp_cache()
-                self.assertEqual(_core(cache["1234-56789-0000"]), _core(first))
-
-                _write_jsonl(path, [updated, extra])
-                with mock.patch.object(sys, "argv", ["timestamp_cache", "--import", str(path)]):
-                    main()
-                cache = load_timestamp_cache()
-                self.assertEqual(_core(cache["1234-56789-0000"]), _core(first))
-                self.assertEqual(_core(cache["1234-56789-0001"]), _core(extra))
-
-                with mock.patch.object(
-                    sys,
-                    "argv",
-                    ["timestamp_cache", "--import", str(path), "--replace"],
-                ):
-                    main()
-                cache = load_timestamp_cache()
-                self.assertEqual(sorted(cache), ["1234-56789-0000", "1234-56789-0001"])
-                self.assertEqual(_core(cache["1234-56789-0000"]), _core(updated))
-                self.assertEqual(_core(cache["1234-56789-0001"]), _core(extra))
-                self.assertTrue((db_dir / "metadata.duckdb").is_file())
-
-    def test_import_duplicate_jsonl_keys_raise(self) -> None:
-        from src.asr.timestamp_cache import main
-
-        record = _record("1234-56789-0000", [])
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with speech_env(root):
-                path = root / "cache.jsonl"
-                _write_jsonl(path, [record, record])
-                with mock.patch.object(sys, "argv", ["timestamp_cache", "--import", str(path)]):
-                    with self.assertRaises(ValueError) as ctx:
-                        main()
-                self.assertIn("duplicate timestamp cache keys", str(ctx.exception))
