@@ -37,7 +37,7 @@ from src.se.common.training import (
 from src.se.se_mamba_pp.asr_guidance import ENCODER_LAYER
 from src.se.se_mamba_pp.discriminator import SEMambaPPDiscriminator
 from src.se.se_mamba_pp.loss import MultiScaleMelSpectrogramLoss, discriminator_loss, generator_loss
-from src.se.se_mamba_pp.model import SEMambaPP
+from src.se.se_mamba_pp.model import SEMambaPP, require_asr_guidance_dim
 
 DEFAULT_CONFIG = Path(__file__).parent / "configs" / "default.json"
 torch.backends.cudnn.benchmark = True
@@ -157,7 +157,7 @@ def main() -> None:
         cfg.train.loss,
         cfg.train.optim,
     )
-    guidance = int(getattr(cfg.model, "asr_guidance_dim", 0) or 0) > 0
+    guidance = require_asr_guidance_dim(cfg.model) > 0
 
     trainset, validset = build_datasets(cfg)
     timestamp_cache = load_timestamp_cache()

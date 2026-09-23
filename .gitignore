@@ -11,3 +11,6 @@
 ## Python
 __pycache__/
 .ruff_cache/
+
+## Local-only code, not tracked
+/src/local/

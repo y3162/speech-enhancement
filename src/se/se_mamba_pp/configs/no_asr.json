@@ -1,0 +1,53 @@
+{
+    "data": {
+        "sampling_rate": 16000,
+        "segment_size": 48000,
+        "normalize": "peak",
+        "stft": {
+            "n_fft": 400,
+            "hop_size": 100,
+            "win_size": 400,
+            "compress_factor": 0.3
+        },
+        "train_splits": ["train-clean-100", "train-clean-360"],
+        "validation_splits": ["dev-clean"],
+        "noise_config_ids": null,
+        "pcs400": false
+    },
+    "model": {
+        "hid_feature": 48,
+        "unet_expansion": 1,
+        "num_tfmamba": 4,
+        "d_state": 16,
+        "d_conv": 4,
+        "expand": 2,
+        "norm_epsilon": 1e-05,
+        "asr_guidance_dim": 0
+    },
+    "train": {
+        "batch_size": 8,
+        "epochs": 100,
+        "seed": 42,
+        "num_workers": 4,
+        "prefetch_factor": 4,
+        "val_batch_size": 4,
+        "pesq_num_workers": 4,
+        "log_interval": 100,
+        "optim": {
+            "learning_rate": 0.0002,
+            "adam_b1": 0.8,
+            "adam_b2": 0.99,
+            "lr_decay": 0.99
+        },
+        "loss": {
+            "magnitude": 0.9,
+            "phase": 0.3,
+            "complex": 0.1,
+            "consistency": 0.1,
+            "adv_g": 1.0,
+            "fm_g": 1.0,
+            "mel": 0.1,
+            "tdt": 1.0
+        }
+    }
+}

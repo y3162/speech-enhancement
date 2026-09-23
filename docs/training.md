@@ -16,7 +16,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 -m src.se.se_mamba_pp.t
     --config src/se/se_mamba_pp/configs/default.json
 ```
 
-- `--config` を省くと各モデルの `configs/default.json` を使う。
+- `--config` を省くと各モデルの `configs/default.json` を使う。SEMamba++ で ASR 特徴量を入れないときは `--config src/se/se_mamba_pp/configs/no_asr.json`（`asr_guidance_dim` が 0）。
 - `--run_dir` に `config.json` がある場合は再開とみなし、その config と `latest.pt` から続ける（`--config` を併用するとエラー）。
 - `train.batch_size` は GPU あたり。全体のバッチは `nproc_per_node` 倍になる。
 - 出力: `run_dir/config.json`、`latest.pt`（毎 epoch）、`best.pt`（検証 PESQ 更新時）、`logs/`（TensorBoard）。

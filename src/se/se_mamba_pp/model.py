@@ -10,11 +10,20 @@ from src.se.se_mamba_pp.asr_guidance import ASR_DIM, fuse_asr_features, project_
 from src.se.se_mamba_pp.bottleneck import SEMambaPPBottleneck
 
 
+def require_asr_guidance_dim(cfg: SimpleNamespace) -> int:
+    """0 disables ASR feature input. A positive int is the projection width."""
+    value = cfg.asr_guidance_dim
+    if type(value) is not int or value < 0:
+        raise ValueError(f"asr_guidance_dim must be a non-negative int, got {value!r}")
+    return value
+
+
 class SEMambaPP(nn.Module):
     """SEMamba++ generator. Unlike SEMamba, decoder output is the magnitude (not multiplied by noisy mag)."""
 
     def __init__(self, cfg: SimpleNamespace, n_fft: int) -> None:
         super().__init__()
+        guidance_dim = require_asr_guidance_dim(cfg)
         self.dense_encoder = DenseEncoder(cfg.hid_feature)
         self.TSMamba = nn.ModuleList([SEMambaPPBottleneck(cfg) for _ in range(cfg.num_tfmamba)])
         self.mask_decoder = MagDecoder(
@@ -22,7 +31,6 @@ class SEMambaPP(nn.Module):
             activation=LearnableSoftplus(n_fft // 2 + 1),
         )
         self.phase_decoder = PhaseDecoder(cfg.hid_feature)
-        guidance_dim = int(getattr(cfg, "asr_guidance_dim", 0) or 0)
         if guidance_dim:
             self.asr_proj: nn.Linear | None = nn.Linear(ASR_DIM, guidance_dim)
             self.asr_fuse: nn.Conv2d | None = nn.Conv2d(cfg.hid_feature + guidance_dim, cfg.hid_feature, kernel_size=1)

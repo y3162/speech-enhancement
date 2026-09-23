@@ -6,7 +6,7 @@ import torch.nn as nn
 from src.se.common.stft import Spec
 from src.se.common.training import load_config
 from src.se.se_mamba_pp.asr_guidance import ASR_DIM
-from src.se.se_mamba_pp.model import SEMambaPP
+from src.se.se_mamba_pp.model import SEMambaPP, require_asr_guidance_dim
 from tests.helpers import se_config
 
 
@@ -64,3 +64,13 @@ class SeMambaPPGpuTest(unittest.TestCase):
         self.assertEqual(tuple(generated.pha.shape), (1, 201, 9))
         with self.assertRaises(ValueError):
             model(mag, pha)
+
+    def test_asr_guidance_dim_is_required_and_non_negative(self) -> None:
+        cfg = _cfg(0)
+        del cfg.model.asr_guidance_dim
+        with self.assertRaises(AttributeError):
+            require_asr_guidance_dim(cfg.model)
+        cfg = _cfg(0)
+        cfg.model.asr_guidance_dim = -1
+        with self.assertRaises(ValueError):
+            require_asr_guidance_dim(cfg.model)
