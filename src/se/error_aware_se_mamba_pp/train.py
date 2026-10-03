@@ -155,15 +155,15 @@ def state_dict_sha256(module: nn.Module) -> str:
 def batch_sample_error(
     asr: ParakeetTDT06BV2,
     clean_audio: torch.Tensor,
-    enhanced_audio: torch.Tensor,
+    noisy_audio: torch.Tensor,
     crop_starts: torch.Tensor,
     crop_ends: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, float]:
-    """Recognize clean crops and enhanced audio, then mark S/D sample intervals."""
+    """Recognize clean crops and noisy crops, then mark S/D sample intervals."""
     content = content_lengths(crop_starts, crop_ends)
     clean_view = _zero_after_content(clean_audio, content)
-    enhanced_view = _zero_after_content(enhanced_audio, content)
-    waveforms = torch.cat([clean_view, enhanced_view], dim=0)
+    noisy_view = _zero_after_content(noisy_audio, content)
+    waveforms = torch.cat([clean_view, noisy_view], dim=0)
     lengths = torch.cat([content, content]).to(device=clean_audio.device, dtype=torch.long)
     with torch.no_grad():
         recordings = asr.recognize(waveforms, lengths)
@@ -172,8 +172,8 @@ def batch_sample_error(
     fractions: list[float] = []
     for batch_index in range(half):
         clean_tokens = [_token_dict(token) for token in recordings[batch_index].tokens]
-        enhanced_tokens = [_token_dict(token) for token in recordings[half + batch_index].tokens]
-        frames = error_frames_from_tokens(clean_tokens, enhanced_tokens)
+        noisy_tokens = [_token_dict(token) for token in recordings[half + batch_index].tokens]
+        frames = error_frames_from_tokens(clean_tokens, noisy_tokens)
         n_samples = int(content[batch_index])
         for start, end in sample_intervals_from_frames(frames, n_samples, ASR_HOP):
             error[batch_index, start:end] = True
@@ -272,7 +272,7 @@ def validate(
         content = None
         if enabled:
             sample_error, content, _fraction = batch_sample_error(
-                asr, clean_audio, enhanced_audio, crop_starts, crop_ends
+                asr, clean_audio, noisy_audio, crop_starts, crop_ends
             )
             sample_error = sample_error.to(device)
             content = content.to(device)
@@ -422,7 +422,7 @@ def main() -> None:
             error_fraction = 0.0
             if enabled:
                 sample_error, content, error_fraction = batch_sample_error(
-                    asr, clean_audio, enhanced_audio, crop_starts, crop_ends
+                    asr, clean_audio, noisy_audio, crop_starts, crop_ends
                 )
                 sample_error = sample_error.to(device)
                 content = content.to(device)

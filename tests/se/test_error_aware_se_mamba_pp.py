@@ -326,7 +326,7 @@ class ModelHashTest(unittest.TestCase):
 
 
 class BatchSampleErrorTest(unittest.TestCase):
-    def test_recognize_uses_content_and_detached_audio(self) -> None:
+    def test_recognize_uses_content_and_detached_noisy_audio(self) -> None:
         try:
             from src.se.error_aware_se_mamba_pp.train import batch_sample_error
         except Exception as exc:
@@ -344,24 +344,24 @@ class BatchSampleErrorTest(unittest.TestCase):
                     SimpleNamespace(tokens=[SimpleNamespace(token_id=1, token="a", start_offset=0, end_offset=1)])
                     for _ in range(half)
                 ]
-                enhanced = []
+                noisy = []
                 for index in range(half):
                     token_id = 2 if index == 0 else 1
-                    enhanced.append(
+                    noisy.append(
                         SimpleNamespace(
                             tokens=[
                                 SimpleNamespace(token_id=token_id, token="b", start_offset=0, end_offset=1)
                             ]
                         )
                     )
-                return clean + enhanced
+                return clean + noisy
 
         clean = torch.ones(2, 200)
-        enhanced = torch.full((2, 200), 3.0, requires_grad=True)
+        noisy = torch.full((2, 200), 3.0, requires_grad=True)
         error, content, fraction = batch_sample_error(
             FakeAsr(),
             clean,
-            enhanced,
+            noisy,
             torch.tensor([0, 0]),
             torch.tensor([100, 50]),
         )

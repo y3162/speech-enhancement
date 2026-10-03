@@ -23,11 +23,11 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 -m src.se.se_mamba_pp.t
 
 ## error-aware SEMamba++
 
-`src/se/error_aware_se_mamba_pp` は SEMamba++ の複製に、凍結 ASR の clean / enhanced 認識差（置換・脱落）でスペクトル損失と mel 損失を時間重みする経路を足したもの。`src.se.se_mamba_pp` は import しない。augmentation は `data.variants_per_utterance`（K）で決まり、epoch `e` は variant `e % K` を再生する。検証は variant 0 の1回。
+`src/se/error_aware_se_mamba_pp` は SEMamba++ の複製に、凍結 ASR の clean / noisy 認識差（置換・脱落）でスペクトル損失と mel 損失を時間重みする経路を足したもの。`src.se.se_mamba_pp` は import しない。augmentation は `data.variants_per_utterance`（K）で決まり、epoch `e` は variant `e % K` を再生する。検証は variant 0 の1回。
 
 `configs/default.json` は重み付けあり（`error_aware.enabled=true`、`alpha=1.0`）。`configs/baseline.json` は同じ K のスケジュールで重み付けなし。
 
-enabled が true のとき、各 step でそのバッチの clean crop と、その step の enhanced 出力を凍結 ASR で認識し、token 列を整列して重みを求める。結果は保存しない。enabled が false のときはこの認識を行わない。
+enabled が true のとき、各 step でそのバッチの clean crop と noisy crop を凍結 ASR で認識し、token 列を整列して重みを求める。結果は保存しない。enabled が false のときはこの認識を行わない。
 
 学習:
 

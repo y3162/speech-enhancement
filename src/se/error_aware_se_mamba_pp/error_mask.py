@@ -85,12 +85,12 @@ def error_frames_from_alignment(
 
 def error_frames_from_tokens(
     clean_tokens: Sequence[dict[str, object]],
-    enhanced_tokens: Sequence[dict[str, object]],
+    noisy_tokens: Sequence[dict[str, object]],
 ) -> list[int]:
-    """S/D frames of a clean reference aligned to an enhanced token sequence."""
+    """S/D frames of a clean reference aligned to a noisy token sequence."""
     alignment = align_token_ids(
         [int(token["token_id"]) for token in clean_tokens],
-        [int(token["token_id"]) for token in enhanced_tokens],
+        [int(token["token_id"]) for token in noisy_tokens],
     )
     return error_frames_from_alignment(clean_tokens, alignment)
 
