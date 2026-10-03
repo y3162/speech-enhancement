@@ -8,7 +8,7 @@ alwaysApply: false
 
 - 学習入口は 4 つの `train.py`（`mp_senet` / `se_mamba` / `se_mamba_pp` / `error_aware_se_mamba_pp`）。各ファイルに G forward → D 更新 → G 更新 → 検証 → 保存のループを直接書く。共通ループ・基底クラス・Factory は作らない。
 - 実行は常に `torchrun --nproc_per_node=N -m src.se.<model>.train --run_dir DIR [--config JSON]`（N=1 でも）。`init_process_group` と DDP は常時。`run_dir/config.json` があれば再開扱いで `--config` はエラー。
-- `error_aware_se_mamba_pp` は `src.se.se_mamba_pp` を import しない。モデル・判別器・損失は複製する。追加の CLI は `--alignment-cache` と `--max-steps`。`error_aware.enabled` が true のときだけ `--alignment-cache` が必須で、false のときに渡すとエラー。キャッシュパスと `--max-steps` は `config.json` に書かない。再開時は `--config` と `--max-steps` を拒否する。alignment cache の意味（整列、mask、schedule、schema）を変えたら `alignment_cache.py` の対応する版数定数を上げる。
+- `error_aware_se_mamba_pp` は `src.se.se_mamba_pp` を import しない。モデル・判別器・損失は複製する。追加の CLI は `--max-steps` だけ。`error_aware.enabled` が true のときは各 step で clean crop とその step の enhanced を凍結 ASR で認識して整列し、S/D 区間の重みを求める。結果は保存しない。false のときはこの認識を行わない。`--max-steps` は `config.json` に書かない。再開時は `--config` と `--max-steps` を拒否する。
 - 2 モデル以上で使う部品は `src/se/common/`（`stft.py` / `phase_loss.py` / `activations.py` / `pesq.py` / `metric_discriminator.py` / `dense.py` / `mamba.py` / `dataset.py` / `pcs.py` / `training.py`）。1 モデルだけのものはそのディレクトリに置く。`training.py` は制御フローを持たない葉関数のみ。
 - 各 `loss.py` は tensor だけを受け取る純関数。判別器の forward は `train.py` に書く。重み付き和は明示的に書き、config に無いキーは `AttributeError` で落とす（黙って無視しない）。
 - チェックポイントは `latest.pt`（generator / discriminator / optim_g / optim_d / sched_g / sched_d / epoch / steps / best_pesq）と `best.pt`（generator）。scheduler は `state_dict` で再開する（`last_epoch` を渡さない）。`sched.step()` の後に保存する。

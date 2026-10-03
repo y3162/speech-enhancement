@@ -1,4 +1,4 @@
-"""CPU checks for the error-aware SEMamba++ schedule, masks, loss, and alignment cache."""
+"""CPU checks for the error-aware SEMamba++ schedule, masks, and loss."""
 
 import json
 import subprocess
@@ -24,14 +24,6 @@ from src.data.schema import (
 )
 from src.se.common.stft import Spec
 from src.se.common.training import load_config, seed_everything
-from src.se.error_aware_se_mamba_pp.alignment_cache import (
-    AlignmentRow,
-    AlignmentStore,
-    AlignmentWriter,
-    fingerprint_mismatches,
-    merge_shard_databases,
-    state_dict_sha256,
-)
 from src.se.error_aware_se_mamba_pp.dataset import ScheduledNoiseDataset, datasets_from_cfg
 from src.se.error_aware_se_mamba_pp.discriminator import DiscriminatorOutputs
 from src.se.error_aware_se_mamba_pp.error_mask import (
@@ -39,6 +31,7 @@ from src.se.error_aware_se_mamba_pp.error_mask import (
     alignment_counts,
     boundary_sd_counts,
     error_frames_from_alignment,
+    error_frames_from_tokens,
     fill_sample_error,
     sample_intervals_from_frames,
     stft_frame_count,
@@ -86,38 +79,6 @@ def _weights() -> SimpleNamespace:
         fm_g=1.0,
         mel=0.1,
         tdt=1.0,
-    )
-
-
-def _fingerprint() -> dict[str, str]:
-    return {"schema": "2", "schedule_version": "seed_sequence_v1"}
-
-
-def _row(index: int, variant: int = 0) -> AlignmentRow:
-    tokens = [{"token_id": 1, "token": "a", "start_offset": 0, "end_offset": 2}]
-    alignment = [("S", 0, 0)]
-    return AlignmentRow(
-        split="train",
-        utterance_index=index,
-        variant=variant,
-        utterance_key=f"key-{index}",
-        crop_start=0,
-        crop_end=4,
-        source_frames=4,
-        pipeline_index=0,
-        noise_id=1,
-        noise_offset=0,
-        snr_db=0.0,
-        content_samples=4,
-        entropy=f"0,1,{index},{variant}",
-        clean_encoded_length=2,
-        noisy_encoded_length=2,
-        clean_text="a",
-        noisy_text="b",
-        clean_tokens=tokens,
-        noisy_tokens=[{"token_id": 2, "token": "b", "start_offset": 0, "end_offset": 2}],
-        alignment=alignment,
-        error_frames=error_frames_from_alignment(tokens, alignment),
     )
 
 
@@ -208,6 +169,21 @@ class MaskTest(unittest.TestCase):
     def test_insertion_is_not_a_reference_window(self) -> None:
         tokens = [{"token_id": 9, "token": "x", "start_offset": 0, "end_offset": 3}]
         self.assertEqual(error_frames_from_alignment(tokens, [("I", None, 0), ("C", 0, 1)]), [])
+
+    def test_token_alignment_marks_substitution_and_deletion_only(self) -> None:
+        same = [{"token_id": 1, "token": "a", "start_offset": 0, "end_offset": 3}]
+        self.assertEqual(error_frames_from_tokens(same, same), [])
+        clean = [
+            {"token_id": 1, "token": "a", "start_offset": 0, "end_offset": 3},
+            {"token_id": 2, "token": "b", "start_offset": 3, "end_offset": 6},
+        ]
+        substituted = [{"token_id": 9, "token": "z", "start_offset": 0, "end_offset": 1}]
+        self.assertEqual(error_frames_from_tokens(clean, substituted), list(range(6)))
+        inserted = [
+            {"token_id": 9, "token": "z", "start_offset": 0, "end_offset": 1},
+            {"token_id": 1, "token": "a", "start_offset": 0, "end_offset": 3},
+        ]
+        self.assertEqual(error_frames_from_tokens(same, inserted), [])
 
     def test_windows_clip_to_the_crop(self) -> None:
         self.assertEqual(sample_intervals_from_frames([0, 5], n_samples=100, hop=1280), [(0, 100)])
@@ -335,41 +311,80 @@ class LossTest(unittest.TestCase):
             self.assertLess(float((ref_grad - param.grad).abs().max()), 1e-4)
 
 
-class FingerprintTest(unittest.TestCase):
-    def test_mismatch_lists_changed_keys(self) -> None:
-        self.assertEqual(
-            fingerprint_mismatches({"a": "1", "b": "2"}, {"a": "1", "b": "9"}),
-            ["b: cache='2' current='9'"],
-        )
-
-    def test_store_does_not_open_on_init(self) -> None:
-        store = AlignmentStore(Path("/tmp/does-not-need-to-exist.sqlite"), {})
-        self.assertIsNone(store._connection)
-
+class ModelHashTest(unittest.TestCase):
     def test_initial_hashes_repeat(self) -> None:
+        try:
+            from src.se.error_aware_se_mamba_pp.train import state_dict_sha256
+        except Exception as exc:
+            raise unittest.SkipTest(f"train entry is not importable here: {exc}") from exc
+
         def linear_hash() -> str:
             seed_everything(42)
             return state_dict_sha256(nn.Linear(8, 8))
 
         self.assertEqual(linear_hash(), linear_hash())
 
-    def test_roundtrip_and_shard_merge(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            left = root / "cache.shard0.sqlite"
-            right = root / "cache.shard1.sqlite"
-            merged = root / "cache.sqlite"
-            for path, row in ((left, _row(0)), (right, _row(1))):
-                writer = AlignmentWriter(path, _fingerprint(), rebuild=False)
-                writer.insert(row)
-                writer.close()
-            count = merge_shard_databases(merged, 2, rebuild=False)
-            self.assertEqual(count, 2)
-            store = AlignmentStore(merged, _fingerprint())
-            self.assertEqual(store.get("train", 1, 0).utterance_key, "key-1")
-            store.close()
-            with self.assertRaises(RuntimeError):
-                AlignmentStore(merged, {"schema": "2", "schedule_version": "other"}).get("train", 0, 0)
+
+class BatchSampleErrorTest(unittest.TestCase):
+    def test_recognize_uses_content_and_detached_audio(self) -> None:
+        try:
+            from src.se.error_aware_se_mamba_pp.train import batch_sample_error
+        except Exception as exc:
+            raise unittest.SkipTest(f"train entry is not importable here: {exc}") from exc
+
+        seen: dict[str, torch.Tensor | bool] = {}
+
+        class FakeAsr:
+            def recognize(self, waveforms: torch.Tensor, lengths: torch.Tensor) -> list[SimpleNamespace]:
+                seen["requires_grad"] = bool(waveforms.requires_grad)
+                seen["waveforms"] = waveforms.detach().cpu().clone()
+                seen["lengths"] = lengths.detach().cpu().clone()
+                half = waveforms.size(0) // 2
+                clean = [
+                    SimpleNamespace(tokens=[SimpleNamespace(token_id=1, token="a", start_offset=0, end_offset=1)])
+                    for _ in range(half)
+                ]
+                enhanced = []
+                for index in range(half):
+                    token_id = 2 if index == 0 else 1
+                    enhanced.append(
+                        SimpleNamespace(
+                            tokens=[
+                                SimpleNamespace(token_id=token_id, token="b", start_offset=0, end_offset=1)
+                            ]
+                        )
+                    )
+                return clean + enhanced
+
+        clean = torch.ones(2, 200)
+        enhanced = torch.full((2, 200), 3.0, requires_grad=True)
+        error, content, fraction = batch_sample_error(
+            FakeAsr(),
+            clean,
+            enhanced,
+            torch.tensor([0, 0]),
+            torch.tensor([100, 50]),
+        )
+        waveforms = seen["waveforms"]
+        lengths = seen["lengths"]
+        self.assertIsInstance(waveforms, torch.Tensor)
+        self.assertIsInstance(lengths, torch.Tensor)
+        self.assertFalse(seen["requires_grad"])
+        self.assertEqual(tuple(waveforms.shape), (4, 200))
+        self.assertTrue(torch.equal(lengths, torch.tensor([100, 50, 100, 50])))
+        self.assertTrue(torch.equal(waveforms[0, :100], torch.ones(100)))
+        self.assertEqual(float(waveforms[0, 100:].abs().sum()), 0.0)
+        self.assertTrue(torch.equal(waveforms[1, :50], torch.ones(50)))
+        self.assertEqual(float(waveforms[1, 50:].abs().sum()), 0.0)
+        self.assertTrue(torch.equal(waveforms[2, :100], torch.full((100,), 3.0)))
+        self.assertEqual(float(waveforms[2, 100:].abs().sum()), 0.0)
+        self.assertTrue(torch.equal(waveforms[3, :50], torch.full((50,), 3.0)))
+        self.assertEqual(float(waveforms[3, 50:].abs().sum()), 0.0)
+        self.assertTrue(torch.equal(content, torch.tensor([100, 50])))
+        self.assertEqual(int(error[0, :100].sum()), 100)
+        self.assertEqual(int(error[0, 100:].sum()), 0)
+        self.assertEqual(int(error[1].sum()), 0)
+        self.assertAlmostEqual(fraction, 0.5)
 
 
 class DatasetTest(unittest.TestCase):
@@ -425,7 +440,7 @@ def _import_parse_args():
 
 
 class ParseArgsTest(unittest.TestCase):
-    def test_new_run_requires_cache_only_when_enabled(self) -> None:
+    def test_new_run_rejects_alignment_cache(self) -> None:
         parse_args = _import_parse_args()
         proposed = se_config("error_aware_se_mamba_pp")
         baseline = se_config("error_aware_se_mamba_pp", "baseline.json")
@@ -433,10 +448,9 @@ class ParseArgsTest(unittest.TestCase):
             run_dir = str(Path(tmp) / "run")
             cache = str(Path(tmp) / "cache.sqlite")
             with mock.patch.object(sys, "argv", ["train", "--run_dir", run_dir, "--config", str(baseline)]):
-                cfg, parsed, parsed_cache, max_steps = parse_args()
+                cfg, parsed, max_steps = parse_args()
             self.assertFalse(cfg.error_aware.enabled)
             self.assertEqual(parsed, Path(run_dir))
-            self.assertIsNone(parsed_cache)
             self.assertIsNone(max_steps)
             with mock.patch.object(
                 sys, "argv", ["train", "--run_dir", run_dir, "--config", str(baseline), "--alignment-cache", cache]
@@ -444,25 +458,18 @@ class ParseArgsTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     parse_args()
             with mock.patch.object(sys, "argv", ["train", "--run_dir", run_dir, "--config", str(proposed)]):
+                cfg, _parsed, max_steps = parse_args()
+            self.assertTrue(cfg.error_aware.enabled)
+            self.assertIsNone(max_steps)
+            with mock.patch.object(
+                sys, "argv", ["train", "--run_dir", run_dir, "--config", str(proposed), "--alignment-cache", cache]
+            ):
                 with self.assertRaises(SystemExit):
                     parse_args()
             with mock.patch.object(
-                sys,
-                "argv",
-                [
-                    "train",
-                    "--run_dir",
-                    run_dir,
-                    "--config",
-                    str(proposed),
-                    "--alignment-cache",
-                    cache,
-                    "--max-steps",
-                    "2",
-                ],
+                sys, "argv", ["train", "--run_dir", run_dir, "--config", str(proposed), "--max-steps", "2"]
             ):
-                _cfg, _dir, parsed_cache, max_steps = parse_args()
-            self.assertEqual(parsed_cache, Path(cache))
+                _cfg, _dir, max_steps = parse_args()
             self.assertEqual(max_steps, 2)
 
     def test_resume_rejects_config_and_max_steps(self) -> None:
@@ -475,9 +482,8 @@ class ParseArgsTest(unittest.TestCase):
             }
             (run_dir / "config.json").write_text(json.dumps(saved), encoding="utf-8")
             with mock.patch.object(sys, "argv", ["train", "--run_dir", str(run_dir)]):
-                cfg, _, cache, max_steps = parse_args()
+                cfg, _, max_steps = parse_args()
             self.assertFalse(cfg.error_aware.enabled)
-            self.assertIsNone(cache)
             self.assertIsNone(max_steps)
             with mock.patch.object(
                 sys, "argv", ["train", "--run_dir", str(run_dir), "--config", str(se_config("error_aware_se_mamba_pp"))]

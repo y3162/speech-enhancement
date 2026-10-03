@@ -1,6 +1,5 @@
 """LibriSpeech mix that replays SeedSequence crops."""
 
-import hashlib
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -41,19 +40,16 @@ class ScheduledSample:
     utterance_key: str
     crop_start: int
     crop_end: int
-    index: int
 
 
 def scheduled_collate(
     batch: list[ScheduledSample],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[str, ...], torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[str, ...], torch.Tensor, torch.Tensor]:
     pairs = [
         AudioPair(sample.clean, sample.noisy, sample.utterance_key, sample.crop_start, sample.crop_end)
         for sample in batch
     ]
-    clean, noisy, lengths, keys, starts, ends = pad_collate(pairs)
-    indices = torch.tensor([sample.index for sample in batch], dtype=torch.long)
-    return clean, noisy, lengths, keys, starts, ends, indices
+    return pad_collate(pairs)
 
 
 def content_lengths(crop_starts: torch.Tensor, crop_ends: torch.Tensor) -> torch.Tensor:
@@ -146,7 +142,7 @@ class ScheduledNoiseDataset(Dataset):
             pad = (0, self.segment_size - source_frames)
             clean = F.pad(clean, pad)
             noisy = F.pad(noisy, pad)
-        return ScheduledSample(clean, noisy, utterance_key(utterance), spec.crop_start, spec.crop_end, index)
+        return ScheduledSample(clean, noisy, utterance_key(utterance), spec.crop_start, spec.crop_end)
 
     def __getitem__(self, index: int) -> ScheduledSample:
         return self.materialize(index, self.variant_for_epoch(self.epoch))
@@ -242,22 +238,6 @@ def load_scheduled_datasets(
         max_frames=max_frames,
     )
     return trainset, validset
-
-
-def noise_list_sha256(metas: list[NoiseMeta]) -> str:
-    digest = hashlib.sha256()
-    for meta in metas:
-        digest.update(f"{meta.noise_id}:{meta.snr_db}:{meta.noise_offset}".encode())
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
-def utterance_key_sha256(utterances: list[Utterance]) -> str:
-    digest = hashlib.sha256()
-    for utterance in utterances:
-        digest.update(utterance_key(utterance).encode())
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def build_scheduled_loaders(

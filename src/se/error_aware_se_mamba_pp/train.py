@@ -6,6 +6,7 @@ torchrun --nproc_per_node=N -m src.se.error_aware_se_mamba_pp.train --run_dir DI
 import src.se.common.cuda_local as _cuda_local  # noqa: F401  # isort: skip
 
 import argparse
+import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -17,7 +18,7 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 
-from src.asr.parakeet_tdt_0_6b_v2 import ParakeetTDT06BV2
+from src.asr.parakeet_tdt_0_6b_v2 import ParakeetTDT06BV2, Token
 from src.asr.timestamp_cache import crop_batch_token_ids, load_timestamp_cache, missing_timestamp_keys
 from src.data.corpora.librispeech import utterance_key
 from src.data.schema import AsrTimestamp
@@ -33,14 +34,6 @@ from src.se.common.training import (
     start_run,
     unpadded,
 )
-from src.se.error_aware_se_mamba_pp.alignment_cache import (
-    AlignmentStore,
-    assert_row_matches,
-    build_fingerprint,
-    require_cache_file,
-    state_dict_sha256,
-    verify_cache_file,
-)
 from src.se.error_aware_se_mamba_pp.asr_guidance import ASR_HOP, ENCODER_LAYER
 from src.se.error_aware_se_mamba_pp.dataset import (
     ScheduledNoiseDataset,
@@ -49,7 +42,7 @@ from src.se.error_aware_se_mamba_pp.dataset import (
     datasets_from_cfg,
 )
 from src.se.error_aware_se_mamba_pp.discriminator import DiscriminatorOutputs, SEMambaPPDiscriminator
-from src.se.error_aware_se_mamba_pp.error_mask import sample_intervals_from_frames
+from src.se.error_aware_se_mamba_pp.error_mask import error_frames_from_tokens, sample_intervals_from_frames
 from src.se.error_aware_se_mamba_pp.loss import (
     MultiScaleMelSpectrogramLoss,
     discriminator_loss,
@@ -59,22 +52,18 @@ from src.se.error_aware_se_mamba_pp.loss import (
 from src.se.error_aware_se_mamba_pp.model import SEMambaPP, require_asr_guidance_dim
 
 DEFAULT_CONFIG = Path(__file__).parent / "configs" / "default.json"
-TRAIN_SPLIT = "train"
-VALID_SPLIT = "valid"
 torch.backends.cudnn.benchmark = True
 
 
-def parse_args(argv: list[str] | None = None) -> tuple[SimpleNamespace, Path, Path | None, int | None]:
-    """Read --config / --run_dir / --alignment-cache / --max-steps.
+def parse_args(argv: list[str] | None = None) -> tuple[SimpleNamespace, Path, int | None]:
+    """Read --config / --run_dir / --max-steps.
 
     A saved config.json is a resume: --config and --max-steps are rejected.
-    --alignment-cache is required when error_aware is enabled, and rejected when it is not.
-    The cache path and max_steps are not written into config.json.
+    max_steps is not written into config.json.
     """
     parser = argparse.ArgumentParser(description="Train error-aware SEMamba++")
     parser.add_argument("--config", default=None, help=f"default: {DEFAULT_CONFIG}")
     parser.add_argument("--run_dir", required=True)
-    parser.add_argument("--alignment-cache", default=None)
     parser.add_argument("--max-steps", type=int, default=None, help="stop after this many optimizer steps")
     args = parser.parse_args(argv)
     run_dir = Path(args.run_dir)
@@ -89,20 +78,14 @@ def parse_args(argv: list[str] | None = None) -> tuple[SimpleNamespace, Path, Pa
             parser.error("--max-steps must be >= 1")
         cfg = load_config(args.config or DEFAULT_CONFIG)
         max_steps = None if args.max_steps is None else int(args.max_steps)
-    enabled = bool(cfg.error_aware.enabled)
-    cache = None if args.alignment_cache is None else Path(args.alignment_cache)
-    if enabled and cache is None:
-        parser.error("--alignment-cache is required when error_aware.enabled is true")
-    if not enabled and cache is not None:
-        parser.error("--alignment-cache is not used when error_aware.enabled is false")
-    if enabled:
+    if bool(cfg.error_aware.enabled):
         alpha = float(cfg.error_aware.alpha)
         if alpha < 0:
             parser.error("error_aware.alpha must be >= 0")
     variants = cfg.data.variants_per_utterance
     if variants is not None and int(variants) < 1:
         parser.error("data.variants_per_utterance must be >= 1 or null")
-    return cfg, run_dir, cache, max_steps
+    return cfg, run_dir, max_steps
 
 
 def _guidance_features(
@@ -142,32 +125,61 @@ def _forward_generator(
     return generator(noisy_mag, noisy_pha, asr_hidden, asr_lengths)
 
 
+def _token_dict(token: Token) -> dict[str, object]:
+    return {
+        "token_id": int(token.token_id),
+        "token": str(token.token),
+        "start_offset": int(token.start_offset),
+        "end_offset": int(token.end_offset),
+    }
+
+
+def _zero_after_content(audio: torch.Tensor, content: torch.Tensor) -> torch.Tensor:
+    positions = torch.arange(audio.size(1), device=audio.device)
+    keep = positions.unsqueeze(0) < content.to(device=audio.device).unsqueeze(1)
+    return audio.detach() * keep.to(dtype=audio.dtype)
+
+
+def state_dict_sha256(module: nn.Module) -> str:
+    digest = hashlib.sha256()
+    state = module.state_dict()
+    for key in sorted(state):
+        tensor = state[key].detach().cpu().contiguous()
+        digest.update(key.encode())
+        digest.update(str(tensor.dtype).encode())
+        digest.update(str(tuple(tensor.shape)).encode())
+        digest.update(tensor.numpy().tobytes())
+    return digest.hexdigest()
+
+
 def batch_sample_error(
-    store: AlignmentStore,
-    dataset: ScheduledNoiseDataset,
-    split: str,
-    epoch: int,
-    indices: torch.Tensor,
-    keys: tuple[str, ...],
+    asr: ParakeetTDT06BV2,
+    clean_audio: torch.Tensor,
+    enhanced_audio: torch.Tensor,
     crop_starts: torch.Tensor,
     crop_ends: torch.Tensor,
-    waveform_length: int,
 ) -> tuple[torch.Tensor, torch.Tensor, float]:
-    variant = dataset.variant_for_epoch(epoch)
-    error = torch.zeros(indices.numel(), waveform_length, dtype=torch.bool)
+    """Recognize clean crops and enhanced audio, then mark S/D sample intervals."""
+    content = content_lengths(crop_starts, crop_ends)
+    clean_view = _zero_after_content(clean_audio, content)
+    enhanced_view = _zero_after_content(enhanced_audio, content)
+    waveforms = torch.cat([clean_view, enhanced_view], dim=0)
+    lengths = torch.cat([content, content]).to(device=clean_audio.device, dtype=torch.long)
+    with torch.no_grad():
+        recordings = asr.recognize(waveforms, lengths)
+    half = clean_audio.size(0)
+    error = torch.zeros(half, clean_audio.size(1), dtype=torch.bool)
     fractions: list[float] = []
-    for batch_index, utterance_index in enumerate(indices.tolist()):
-        row = store.get(split, int(utterance_index), variant)
-        spec = dataset.spec_for(int(utterance_index), variant)
-        assert_row_matches(row, spec, keys[batch_index])
-        content = int(crop_ends[batch_index] - crop_starts[batch_index])
-        if content != row.content_samples:
-            raise RuntimeError(f"content length {content} != cache {row.content_samples} for {keys[batch_index]}")
-        for start, end in sample_intervals_from_frames(row.error_frames, content, ASR_HOP):
+    for batch_index in range(half):
+        clean_tokens = [_token_dict(token) for token in recordings[batch_index].tokens]
+        enhanced_tokens = [_token_dict(token) for token in recordings[half + batch_index].tokens]
+        frames = error_frames_from_tokens(clean_tokens, enhanced_tokens)
+        n_samples = int(content[batch_index])
+        for start, end in sample_intervals_from_frames(frames, n_samples, ASR_HOP):
             error[batch_index, start:end] = True
-        fractions.append((float(error[batch_index, :content].sum()) / content) if content else 0.0)
+        fractions.append((float(error[batch_index, :n_samples].sum()) / n_samples) if n_samples else 0.0)
     fraction = sum(fractions) / len(fractions) if fractions else 0.0
-    return error, content_lengths(crop_starts, crop_ends), fraction
+    return error, content, fraction
 
 
 def _generator_losses(
@@ -234,12 +246,10 @@ def validate(
     asr: ParakeetTDT06BV2,
     timestamp_cache: dict[str, AsrTimestamp],
     loader: DataLoader,
-    validset: ScheduledNoiseDataset,
     cfg: SimpleNamespace,
     device: torch.device,
     enabled: bool,
     alpha: float,
-    store: AlignmentStore | None,
 ) -> dict[str, float]:
     generator.eval()
     discriminator.eval()
@@ -248,7 +258,7 @@ def validate(
     n = 0
     empty = 0
     clean_list, enhanced_list = [], []
-    for clean_audio, noisy_audio, lengths, keys, crop_starts, crop_ends, indices in loader:
+    for clean_audio, noisy_audio, lengths, keys, crop_starts, crop_ends in loader:
         clean_audio = clean_audio.to(device, non_blocking=True)
         noisy_audio = noisy_audio.to(device, non_blocking=True)
         lengths = lengths.to(device, non_blocking=True)
@@ -261,10 +271,8 @@ def validate(
         sample_error = None
         content = None
         if enabled:
-            if store is None:
-                raise RuntimeError("validation weighting requires the alignment cache")
             sample_error, content, _fraction = batch_sample_error(
-                store, validset, VALID_SPLIT, 0, indices, keys, crop_starts, crop_ends, clean_audio.size(1)
+                asr, clean_audio, enhanced_audio, crop_starts, crop_ends
             )
             sample_error = sample_error.to(device)
             content = content.to(device)
@@ -309,12 +317,8 @@ def validate(
 
 
 def main() -> None:
-    cfg, run_dir, alignment_cache, max_steps = parse_args()
+    cfg, run_dir, max_steps = parse_args()
     enabled = bool(cfg.error_aware.enabled)
-    if enabled:
-        if alignment_cache is None:
-            raise RuntimeError("--alignment-cache is required when error_aware.enabled is true")
-        require_cache_file(alignment_cache)
     device, rank = init_distributed()
     seed_everything(cfg.train.seed)
     writer = start_run(run_dir, cfg, rank)
@@ -336,22 +340,6 @@ def main() -> None:
     mel_loss = MultiScaleMelSpectrogramLoss(sample_rate)
     asr = ParakeetTDT06BV2()
     trainset, validset = datasets_from_cfg(cfg)
-    fingerprint = build_fingerprint(
-        asr,
-        trainset,
-        validset,
-        sampling_rate=int(sample_rate),
-        segment_size=int(cfg.data.segment_size),
-        normalize=str(cfg.data.normalize),
-        train_splits=list(cfg.data.train_splits),
-        valid_splits=list(cfg.data.validation_splits),
-        base_seed=int(cfg.train.seed),
-        variants_per_utterance=None if variants is None else int(variants),
-    )
-    if enabled:
-        if alignment_cache is None:
-            raise RuntimeError("--alignment-cache is required when error_aware.enabled is true")
-        verify_cache_file(alignment_cache, fingerprint)
     asr = asr.to(device)
     asr.eval()
     for parameter in asr.parameters():
@@ -398,7 +386,6 @@ def main() -> None:
     generator = DDP(generator, device_ids=[device.index])
     discriminator = DDP(discriminator, device_ids=[device.index])
     train_loader, valid_loader = build_scheduled_loaders(trainset, validset, cfg.train, int(cfg.train.seed))
-    store = AlignmentStore(alignment_cache, fingerprint) if enabled and alignment_cache is not None else None
     if rank == 0:
         print(
             f"SEMamba++: {sum(p.numel() for p in generator.parameters()) / 1e6:.3f}M params, "
@@ -412,7 +399,7 @@ def main() -> None:
         trainset.set_epoch(epoch)
         generator.train()
         discriminator.train()
-        for clean_audio, noisy_audio, lengths, keys, crop_starts, crop_ends, indices in train_loader:
+        for clean_audio, noisy_audio, lengths, keys, crop_starts, crop_ends in train_loader:
             clean_audio = clean_audio.to(device, non_blocking=True)
             noisy_audio = noisy_audio.to(device, non_blocking=True)
             wav_lengths = lengths.to(device, non_blocking=True)
@@ -430,21 +417,19 @@ def main() -> None:
             loss_d["total"].backward()
             optim_d.step()
 
-            token_ids, _empty_n = _tdt_targets_from_cache(timestamp_cache, keys, crop_starts, crop_ends)
-            optim_g.zero_grad(set_to_none=True)
-            disc_out = discriminator(clean_audio.unsqueeze(1), enhanced_audio.unsqueeze(1))
-            tdt = asr.loss_from_ids(enhanced_audio, wav_lengths, token_ids).mean()
             sample_error = None
             content = None
             error_fraction = 0.0
             if enabled:
-                if store is None:
-                    raise RuntimeError("training weighting requires the alignment cache")
                 sample_error, content, error_fraction = batch_sample_error(
-                    store, trainset, TRAIN_SPLIT, epoch, indices, keys, crop_starts, crop_ends, clean_audio.size(1)
+                    asr, clean_audio, enhanced_audio, crop_starts, crop_ends
                 )
                 sample_error = sample_error.to(device)
                 content = content.to(device)
+            token_ids, _empty_n = _tdt_targets_from_cache(timestamp_cache, keys, crop_starts, crop_ends)
+            optim_g.zero_grad(set_to_none=True)
+            disc_out = discriminator(clean_audio.unsqueeze(1), enhanced_audio.unsqueeze(1))
+            tdt = asr.loss_from_ids(enhanced_audio, wav_lengths, token_ids).mean()
             losses = _generator_losses(
                 clean,
                 gen,
@@ -497,12 +482,10 @@ def main() -> None:
             asr,
             timestamp_cache,
             valid_loader,
-            validset,
             cfg,
             device,
             enabled,
             alpha,
-            store,
         )
         sched_g.step()
         sched_d.step()
@@ -533,8 +516,6 @@ def main() -> None:
             )
         dist.barrier()
 
-    if store is not None:
-        store.close()
     if writer is not None:
         writer.close()
     dist.destroy_process_group()
