@@ -20,3 +20,37 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 -m src.se.se_mamba_pp.t
 - `--run_dir` に `config.json` がある場合は再開とみなし、その config と `latest.pt` から続ける（`--config` を併用するとエラー）。
 - `train.batch_size` は GPU あたり。全体のバッチは `nproc_per_node` 倍になる。
 - 出力: `run_dir/config.json`、`latest.pt`（毎 epoch）、`best.pt`（検証 PESQ 更新時）、`logs/`（TensorBoard）。
+
+## error-aware SEMamba++
+
+`src/se/error_aware_se_mamba_pp` は SEMamba++ の複製に、凍結 ASR の clean / noisy 認識差（置換・脱落）でスペクトル損失と mel 損失を時間重みする経路を足したもの。`src.se.se_mamba_pp` は import しない。augmentation は `data.variants_per_utterance`（K）で決まり、epoch `e` は variant `e % K` を再生する。検証は variant 0 の1回。
+
+`configs/default.json` は重み付けあり（`error_aware.enabled=true`、`alpha=1.0`）。`configs/baseline.json` は同じ K のスケジュールで重み付けなし。キャッシュのパスはホスト依存なので config に入れず、`--alignment-cache` で渡す。enabled が true のときだけ必須。
+
+キャッシュは学習前に作る。シャードに分けてから結合する。
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m src.se.error_aware_se_mamba_pp.build_cache \
+    --alignment-cache data/error_aware_se_mamba_pp/alignment.shard0.sqlite \
+    --config src/se/error_aware_se_mamba_pp/configs/default.json \
+    --num-shards 2 --shard 0
+
+python -m src.se.error_aware_se_mamba_pp.build_cache \
+    --alignment-cache data/error_aware_se_mamba_pp/alignment.sqlite \
+    --merge-shards 2
+```
+
+学習:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 torchrun --nproc_per_node=1 -m src.se.error_aware_se_mamba_pp.train \
+    --run_dir data/checkpoints/error_aware_se_mamba_pp/baseline \
+    --config src/se/error_aware_se_mamba_pp/configs/baseline.json
+
+CUDA_VISIBLE_DEVICES=0 torchrun --nproc_per_node=1 -m src.se.error_aware_se_mamba_pp.train \
+    --run_dir data/checkpoints/error_aware_se_mamba_pp/proposed \
+    --config src/se/error_aware_se_mamba_pp/configs/default.json \
+    --alignment-cache data/error_aware_se_mamba_pp/alignment.sqlite
+```
+
+`--max-steps N` は optimizer step が N に達した時点で検証と保存をせずに止める。`run_dir/config.json` がある再開では `--config` と `--max-steps` はエラー。
