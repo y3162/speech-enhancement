@@ -12,6 +12,7 @@ from unittest import mock
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.data import DistributedSampler
 
 from src.data.db import Connection, fetch_noises, import_rows
 from src.data.schema import (
@@ -24,7 +25,7 @@ from src.data.schema import (
 )
 from src.se.common.stft import Spec
 from src.se.common.training import load_config, seed_everything
-from src.se.error_aware_se_mamba_pp.dataset import ScheduledNoiseDataset, datasets_from_cfg
+from src.se.error_aware_se_mamba_pp.dataset import ScheduledNoiseDataset, build_scheduled_loaders, datasets_from_cfg
 from src.se.error_aware_se_mamba_pp.discriminator import DiscriminatorOutputs
 from src.se.error_aware_se_mamba_pp.error_mask import (
     align_token_ids,
@@ -48,7 +49,6 @@ from src.se.error_aware_se_mamba_pp.schedule import (
     TRAIN_SPLIT_CODE,
     NoiseMeta,
     augmentation_spec,
-    variant_for_epoch,
 )
 from tests.helpers import se_config, write_audio
 
@@ -60,8 +60,8 @@ def _metas(count: int) -> list[NoiseMeta]:
     return [NoiseMeta(noise_id=index + 1, snr_db=float(index - 10), noise_offset=index * 3) for index in range(count)]
 
 
-def _spec(variant: int, source_frames: int = 100_000, crop: bool = True) -> object:
-    return augmentation_spec(42, TRAIN_SPLIT_CODE, 7, variant, 20, source_frames, 48_000, crop, _metas(20))
+def _spec(epoch: int, source_frames: int = 100_000, crop: bool = True) -> object:
+    return augmentation_spec(42, TRAIN_SPLIT_CODE, 7, epoch, 20, source_frames, 48_000, crop, _metas(20))
 
 
 def _disc() -> DiscriminatorOutputs:
@@ -128,18 +128,28 @@ class ScheduleTest(unittest.TestCase):
         self.assertGreaterEqual(first.crop_start, 0)
         self.assertLessEqual(first.crop_start, 100_000 - 48_000)
         self.assertEqual(first.crop_end, first.crop_start + 48_000)
-        varied = {_spec(variant).pipeline_index for variant in range(8)}
-        varied.update(_spec(variant).crop_start for variant in range(8))
+        varied = {_spec(epoch).pipeline_index for epoch in range(8)}
+        varied.update(_spec(epoch).crop_start for epoch in range(8))
         self.assertGreater(len(varied), 1)
+
+    def test_training_epochs_do_not_cycle(self) -> None:
+        for epoch in (0, 1, 8, 9, 17, 18, 99):
+            with self.subTest(epoch=epoch):
+                spec = _spec(epoch)
+                self.assertEqual(spec.epoch, epoch)
+                self.assertEqual(spec.entropy, f"42,1,7,{epoch}")
+        first, later = _spec(0), _spec(9)
+        self.assertNotEqual((first.pipeline_index, first.crop_start), (later.pipeline_index, later.crop_start))
+        with self.assertRaises(ValueError):
+            _spec(-1)
 
     def test_short_and_validation_do_not_crop(self) -> None:
         short = _spec(1, source_frames=1000, crop=True)
         self.assertEqual((short.crop_start, short.crop_end), (0, 1000))
         valid = _spec(3, source_frames=80_000, crop=False)
         self.assertEqual((valid.crop_start, valid.crop_end), (0, 80_000))
-        self.assertEqual(variant_for_epoch(5, 4, crop=True), 1)
-        self.assertEqual(variant_for_epoch(5, None, crop=True), 5)
-        self.assertEqual(variant_for_epoch(5, 4, crop=False), 0)
+        self.assertEqual(valid.epoch, 0)
+        self.assertEqual(valid, _spec(0, source_frames=80_000, crop=False))
 
     def test_alignment_tie_break(self) -> None:
         ops = align_token_ids([1, 2], [2, 1])
@@ -388,7 +398,65 @@ class BatchSampleErrorTest(unittest.TestCase):
 
 
 class DatasetTest(unittest.TestCase):
-    def test_materialize_repeats_the_same_variant(self) -> None:
+    def test_epoch_updates_reach_workers(self) -> None:
+        for num_workers, context in ((0, None), (2, None), (2, "spawn")):
+            with self.subTest(num_workers=num_workers, context=context), tempfile.TemporaryDirectory() as tmp:
+                db_dir, corpora = speech_pair(Path(tmp))
+                with speech_env_at(db_dir, corpora):
+                    cfg = SimpleNamespace(
+                        data=SimpleNamespace(
+                            sampling_rate=SAMPLE_RATE,
+                            segment_size=800,
+                            normalize="peak",
+                            train_splits=["train-clean-100"],
+                            validation_splits=["dev-clean"],
+                            noise_config_ids=None,
+                        ),
+                        train=SimpleNamespace(
+                            seed=42, batch_size=1, val_batch_size=1, num_workers=num_workers, prefetch_factor=2
+                        ),
+                    )
+                    trainset, validset = datasets_from_cfg(cfg)
+                    trainset.utterances *= 4
+                    with mock.patch(
+                        "src.se.error_aware_se_mamba_pp.dataset.DistributedSampler",
+                        side_effect=lambda dataset, **kwargs: DistributedSampler(
+                            dataset, num_replicas=1, rank=0, **kwargs
+                        ),
+                    ):
+                        train_loader, valid_loader = build_scheduled_loaders(trainset, validset, cfg.train, 42)
+                    if context is not None:
+                        train_loader.multiprocessing_context = context
+                    worker_pids = None
+                    try:
+                        for epoch in (17, 18, 0, 1, 8, 9, 99):
+                            trainset.set_epoch(epoch)
+                            train_loader.sampler.set_epoch(epoch)
+                            indices = list(train_loader.sampler)
+                            batches = list(train_loader)
+                            self.assertEqual(len(batches), len(indices))
+                            for index, batch in zip(indices, batches):
+                                clean, noisy, _lengths, keys, starts, ends = batch
+                                expected = trainset.materialize(index, epoch)
+                                self.assertEqual(tuple(keys), (expected.utterance_key,))
+                                self.assertEqual(
+                                    (int(starts[0]), int(ends[0])), (expected.crop_start, expected.crop_end)
+                                )
+                                self.assertTrue(torch.equal(clean[0], expected.clean))
+                                self.assertTrue(torch.equal(noisy[0], expected.noisy))
+                            if num_workers:
+                                pids = tuple(worker.pid for worker in train_loader._iterator._workers)
+                                if worker_pids is None:
+                                    worker_pids = pids
+                                self.assertEqual(pids, worker_pids)
+                            validset.set_epoch(epoch)
+                            valid_batch = next(iter(valid_loader))
+                            self.assertTrue(torch.equal(valid_batch[1][0], validset.materialize(0, 0).noisy))
+                    finally:
+                        if train_loader._iterator is not None:
+                            train_loader._iterator._shutdown_workers()
+
+    def test_materialize_repeats_the_same_epoch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_dir, corpora = speech_pair(Path(tmp))
             with speech_env_at(db_dir, corpora):
@@ -400,19 +468,18 @@ class DatasetTest(unittest.TestCase):
                         train_splits=["train-clean-100"],
                         validation_splits=["dev-clean"],
                         noise_config_ids=None,
-                        variants_per_utterance=2,
                     ),
                     train=SimpleNamespace(seed=42),
                 )
                 trainset, validset = datasets_from_cfg(cfg)
-                first = trainset.materialize(0, 0)
-                second = trainset.materialize(0, 0)
+                first = trainset.materialize(0, 3)
+                second = trainset.materialize(0, 3)
                 self.assertTrue(torch.equal(first.clean, second.clean))
                 self.assertTrue(torch.equal(first.noisy, second.noisy))
                 self.assertEqual((first.crop_start, first.crop_end), (second.crop_start, second.crop_end))
                 self.assertEqual(len(first.clean), 800)
-                self.assertEqual(validset.variant_for_epoch(3), 0)
-                self.assertEqual(trainset.variant_for_epoch(3), 1)
+                self.assertEqual(validset.spec_for(0, 3).epoch, 0)
+                self.assertEqual(trainset.spec_for(0, 3).epoch, 3)
                 self.assertIsInstance(trainset, ScheduledNoiseDataset)
 
 
@@ -422,11 +489,11 @@ class ConfigFileTest(unittest.TestCase):
         baseline = load_config(se_config("error_aware_se_mamba_pp", "baseline.json"))
         self.assertTrue(proposed.error_aware.enabled)
         self.assertEqual(proposed.error_aware.alpha, 1.0)
-        self.assertEqual(proposed.data.variants_per_utterance, 9)
+        self.assertFalse(hasattr(proposed.data, "variants_per_utterance"))
         self.assertFalse(hasattr(proposed.data, "pcs400"))
         self.assertFalse(baseline.error_aware.enabled)
         self.assertFalse(hasattr(baseline.error_aware, "alpha"))
-        self.assertEqual(baseline.data.variants_per_utterance, 9)
+        self.assertFalse(hasattr(baseline.data, "variants_per_utterance"))
         for key in ("magnitude", "phase", "complex", "consistency", "adv_g", "fm_g", "mel", "tdt"):
             self.assertIn(key, vars(proposed.train.loss))
 

@@ -82,9 +82,6 @@ def parse_args(argv: list[str] | None = None) -> tuple[SimpleNamespace, Path, in
         alpha = float(cfg.error_aware.alpha)
         if alpha < 0:
             parser.error("error_aware.alpha must be >= 0")
-    variants = cfg.data.variants_per_utterance
-    if variants is not None and int(variants) < 1:
-        parser.error("data.variants_per_utterance must be >= 1 or null")
     return cfg, run_dir, max_steps
 
 
@@ -331,7 +328,6 @@ def main() -> None:
         cfg.train.optim,
     )
     alpha = float(cfg.error_aware.alpha) if enabled else 0.0
-    variants = cfg.data.variants_per_utterance
 
     generator = SEMambaPP(cfg.model, stft.n_fft).to(device)
     discriminator = SEMambaPPDiscriminator().to(device)
@@ -376,7 +372,7 @@ def main() -> None:
         else:
             _write_hashes(run_dir, fresh_generator_hash, fresh_discriminator_hash, cfg.train.seed, False)
         print(
-            f"distributed_sampler_seed={cfg.train.seed} error_aware={enabled} alpha={alpha} variants={variants}",
+            f"distributed_sampler_seed={cfg.train.seed} error_aware={enabled} alpha={alpha} augmentation=epoch",
             flush=True,
         )
 

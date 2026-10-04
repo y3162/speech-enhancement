@@ -21,7 +21,7 @@ class NoiseMeta:
 @dataclass(frozen=True)
 class AugmentationSpec:
     entropy: str
-    variant: int
+    epoch: int
     pipeline_index: int
     crop_start: int
     crop_end: int
@@ -46,40 +46,32 @@ def noise_start_frame(step: AdditiveStep) -> int:
     return int(rng.integers(0, range_len))
 
 
-def variant_for_epoch(epoch: int, variants_per_utterance: int | None, crop: bool) -> int:
-    if epoch < 0:
-        raise ValueError(f"epoch must be >= 0, got {epoch}")
-    if not crop:
-        return 0
-    if variants_per_utterance is None:
-        return epoch
-    if variants_per_utterance < 1:
-        raise ValueError(f"variants_per_utterance must be >= 1, got {variants_per_utterance}")
-    return epoch % variants_per_utterance
-
-
 def augmentation_spec(
     base_seed: int,
     split_code: int,
     index: int,
-    variant: int,
+    epoch: int,
     n_pipelines: int,
     source_frames: int,
     segment_size: int,
     crop: bool,
     noise_meta: list[NoiseMeta],
 ) -> AugmentationSpec:
-    """Replay one (utterance, variant) mix. Crop draws use inclusive bounds, matching random.randint."""
+    """Replay one (utterance, epoch) mix. Validation always uses epoch 0.
+
+    Crop draws use inclusive bounds, matching random.randint.
+    """
     if n_pipelines < 1:
         raise ValueError("n_pipelines must be >= 1")
     if len(noise_meta) != n_pipelines:
         raise ValueError(f"noise_meta length {len(noise_meta)} != n_pipelines {n_pipelines}")
     if source_frames < 1:
         raise ValueError(f"source_frames must be >= 1, got {source_frames}")
-    if variant < 0 or index < 0:
-        raise ValueError(f"index and variant must be >= 0, got {index}, {variant}")
-    entropy = f"{int(base_seed)},{int(split_code)},{int(index)},{int(variant)}"
-    rng = np.random.default_rng(np.random.SeedSequence([int(base_seed), int(split_code), int(index), int(variant)]))
+    if epoch < 0 or index < 0:
+        raise ValueError(f"index and epoch must be >= 0, got {index}, {epoch}")
+    epoch = int(epoch) if crop else 0
+    entropy = f"{int(base_seed)},{int(split_code)},{int(index)},{epoch}"
+    rng = np.random.default_rng(np.random.SeedSequence([int(base_seed), int(split_code), int(index), epoch]))
     pipeline_index = int(rng.integers(0, n_pipelines))
     if crop and source_frames > segment_size:
         crop_start = int(rng.integers(0, source_frames - segment_size + 1))
@@ -90,7 +82,7 @@ def augmentation_spec(
     meta = noise_meta[pipeline_index]
     return AugmentationSpec(
         entropy=entropy,
-        variant=variant,
+        epoch=epoch,
         pipeline_index=pipeline_index,
         crop_start=crop_start,
         crop_end=crop_end,

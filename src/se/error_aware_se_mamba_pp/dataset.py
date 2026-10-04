@@ -27,7 +27,6 @@ from src.se.error_aware_se_mamba_pp.schedule import (
     NoiseMeta,
     augmentation_spec,
     noise_start_frame,
-    variant_for_epoch,
 )
 
 _LIBRISPEECH_CORPUS = "LibriSpeech"
@@ -68,7 +67,6 @@ class ScheduledNoiseDataset(Dataset):
         crop: bool,
         split_code: int,
         base_seed: int,
-        variants_per_utterance: int | None,
         max_frames: int | None = None,
     ) -> None:
         if not utterances:
@@ -86,15 +84,19 @@ class ScheduledNoiseDataset(Dataset):
         self.crop = crop
         self.split_code = split_code
         self.base_seed = base_seed
-        self.variants_per_utterance = variants_per_utterance
         self.max_frames = max_frames
-        self.epoch = 0
+        # Persistent workers must observe epoch updates from the parent process.
+        self._epoch = torch.zeros((), dtype=torch.long).share_memory_()
 
     def __len__(self) -> int:
         return len(self.utterances)
 
+    @property
+    def epoch(self) -> int:
+        return int(self._epoch.item())
+
     def set_epoch(self, epoch: int) -> None:
-        self.epoch = int(epoch)
+        self._epoch.fill_(int(epoch))
 
     def source_frames(self, index: int) -> int:
         frames = self.utterances[index].frames
@@ -104,15 +106,12 @@ class ScheduledNoiseDataset(Dataset):
             return min(int(frames), int(self.max_frames))
         return int(frames)
 
-    def variant_for_epoch(self, epoch: int) -> int:
-        return variant_for_epoch(epoch, self.variants_per_utterance, self.crop)
-
-    def spec_for(self, index: int, variant: int) -> AugmentationSpec:
+    def spec_for(self, index: int, epoch: int) -> AugmentationSpec:
         return augmentation_spec(
             self.base_seed,
             self.split_code,
             index,
-            variant,
+            epoch,
             len(self.pipelines),
             self.source_frames(index),
             self.segment_size,
@@ -120,14 +119,14 @@ class ScheduledNoiseDataset(Dataset):
             self.noise_meta,
         )
 
-    def materialize(self, index: int, variant: int) -> ScheduledSample:
+    def materialize(self, index: int, epoch: int) -> ScheduledSample:
         utterance = self.utterances[index]
         if utterance.sample_rate != self.sampling_rate:
             raise ValueError(
                 f"{utterance.audio_path} sample_rate {utterance.sample_rate} does not match {self.sampling_rate}"
             )
         source_frames = self.source_frames(index)
-        spec = self.spec_for(index, variant)
+        spec = self.spec_for(index, epoch)
         clean_2d = read_audio_segment(utterance.audio_path, 0, source_frames)
         noise_2d = generate(clean_2d, int(utterance.sample_rate), self.pipelines[spec.pipeline_index])
         clean = torch.from_numpy(_to_mono_waveform(clean_2d, utterance.audio_path))
@@ -145,7 +144,7 @@ class ScheduledNoiseDataset(Dataset):
         return ScheduledSample(clean, noisy, utterance_key(utterance), spec.crop_start, spec.crop_end)
 
     def __getitem__(self, index: int) -> ScheduledSample:
-        return self.materialize(index, self.variant_for_epoch(self.epoch))
+        return self.materialize(index, self.epoch)
 
 
 def _load_split(
@@ -183,7 +182,6 @@ def datasets_from_cfg(cfg: SimpleNamespace) -> tuple[ScheduledNoiseDataset, Sche
     ids = cfg.data.noise_config_ids
     if ids is not None and not isinstance(ids, list):
         ids = list(ids)
-    variants = cfg.data.variants_per_utterance
     return load_scheduled_datasets(
         int(cfg.data.sampling_rate),
         int(cfg.data.segment_size),
@@ -192,7 +190,6 @@ def datasets_from_cfg(cfg: SimpleNamespace) -> tuple[ScheduledNoiseDataset, Sche
         list(cfg.data.validation_splits),
         ids,
         int(cfg.train.seed),
-        None if variants is None else int(variants),
     )
 
 
@@ -204,7 +201,6 @@ def load_scheduled_datasets(
     valid_splits: list[str],
     noise_config_ids: list[int] | None,
     base_seed: int,
-    variants_per_utterance: int | None,
 ) -> tuple[ScheduledNoiseDataset, ScheduledNoiseDataset]:
     train_utterances, train_pipelines, train_meta = _load_split(train_splits, noise_config_ids)
     valid_utterances, valid_pipelines, valid_meta = _load_split(valid_splits, noise_config_ids)
@@ -222,7 +218,6 @@ def load_scheduled_datasets(
         crop=True,
         split_code=TRAIN_SPLIT_CODE,
         base_seed=base_seed,
-        variants_per_utterance=variants_per_utterance,
     )
     validset = ScheduledNoiseDataset(
         valid_utterances,
@@ -234,7 +229,6 @@ def load_scheduled_datasets(
         crop=False,
         split_code=VALID_SPLIT_CODE,
         base_seed=base_seed,
-        variants_per_utterance=variants_per_utterance,
         max_frames=max_frames,
     )
     return trainset, validset

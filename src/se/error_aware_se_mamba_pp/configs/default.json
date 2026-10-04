@@ -11,8 +11,7 @@
         },
         "train_splits": ["train-clean-100", "train-clean-360"],
         "validation_splits": ["dev-clean"],
-        "noise_config_ids": null,
-        "variants_per_utterance": 9
+        "noise_config_ids": null
     },
     "model": {
         "hid_feature": 48,
